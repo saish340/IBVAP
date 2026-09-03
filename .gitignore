@@ -18,11 +18,18 @@ venv/
 node_modules/
 frontend/dist/
 
+# --- Fake CCTV stream state (pid/log) ---
+scripts/.fake_cctv/
+
 # --- AI model weights & sample media (downloaded at runtime) ---
 *.pt
 *.onnx
 *.engine
 models/
+samples/
+
+# --- Vendored tools (MediaMTX etc., downloaded at runtime) ---
+tools/
 
 # --- IDE / OS ---
 .idea/

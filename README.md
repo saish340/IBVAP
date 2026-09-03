@@ -39,6 +39,7 @@ ibvap/
 │   ├── pipeline_manager.py    #   registry of running pipelines
 │   └── routers/               #   health, streams, analytics endpoints
 ├── frontend/                  # React + Vite + Tailwind placeholder dashboard
+├── scripts/                   # fake-CCTV ffmpeg re-streamer + RTSP test viewer
 ├── docker-compose.yml         # backend + frontend + postgres
 ├── Dockerfile                 # backend image (python:3.11-slim)
 └── requirements.txt
@@ -114,6 +115,49 @@ curl http://localhost:8000/streams                       # list streams
 curl http://localhost:8000/analytics/streams/1/results   # latest results
 curl -X POST http://localhost:8000/analytics/streams/1/run/ocr
 curl "http://localhost:8000/analytics/events?limit=20"   # persisted rows
+```
+
+### Fake CCTV camera (ffmpeg → RTSP)
+
+Prefer a feed that behaves like a real network camera? Re-stream any local
+video file as a looping RTSP feed:
+
+* `-re` paces the file at native frame rate ("live"), `-stream_loop -1` loops it forever
+* H.264 baseline/zerolatency encoding keeps the feed low-latency and player-friendly
+
+**Recommended: MediaMTX mode** — any number of simultaneous clients (the IBVAP
+backend *and* a viewer at once). MediaMTX is a single zero-config binary:
+
+1. Download [MediaMTX](https://github.com/bluenviron/mediamtx/releases) and put
+   `mediamtx(.exe)` on your PATH (or point `--mediamtx-bin` at it).
+2. Start the fake camera:
+
+   ```
+   python scripts/fake_cctv.py sample samples/demo.mp4   # generate a test clip (optional)
+   python scripts/fake_cctv.py start samples/demo.mp4    # background stream w/ auto-restart
+   python scripts/fake_cctv.py status                    # running? recent log lines?
+   python scripts/rtsp_viewer.py                         # OpenCV window on rtsp://127.0.0.1:8554/cctv
+   python scripts/fake_cctv.py stop
+   ```
+
+   The raw ffmpeg command the wrapper runs (MediaMTX hosts the feed):
+
+   ```
+   ffmpeg -re -stream_loop -1 -i samples/demo.mp4 -an ^
+     -c:v libx264 -preset ultrafast -tune zerolatency -profile:v baseline ^
+     -pix_fmt yuv420p -g 25 -bf 0 -crf 28 -f rtsp rtsp://127.0.0.1:8554/cctv
+   ```
+
+**Zero-dependency alternative:** `--mode listen` makes ffmpeg itself the RTSP
+server (`-rtsp_flags listen`) — no extra software, but it serves exactly one
+client at a time, and some ffmpeg builds (e.g. 8.x on Windows) never open the
+listening port in this mode. If port 8554 stays closed, use MediaMTX mode.
+
+Then register the feed in IBVAP like any other camera:
+
+```
+curl -X POST http://localhost:8000/streams -H "Content-Type: application/json" ^
+  -d "{\"name\":\"fake-cctv\",\"source_url\":\"rtsp://127.0.0.1:8554/cctv\",\"capabilities\":[\"detection\"]}"
 ```
 
 ## API overview
