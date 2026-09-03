@@ -1,0 +1,25 @@
+# IBVAP backend requirements (Python 3.11)
+#
+# Heads-up on heavyweight dependencies:
+#   * deepface pulls in TensorFlow (~500 MB)
+#   * paddleocr needs a paddle runtime, which it does NOT install itself:
+#     uncomment `paddlepaddle` below if `import paddleocr` fails.
+# Model weights (YOLO .pt, DeepFace, MediaPipe, PaddleOCR) are downloaded
+# automatically on first use and cached in the user's home directory.
+
+# --- AI / vision capabilities -------------------------------------------
+ultralytics          # YOLO object detection + tracking
+opencv-python        # video capture (RTSP via FFmpeg) and image ops
+deepface             # face detection / recognition
+paddleocr            # text recognition (OCR)
+mediapipe            # human pose estimation
+
+# --- Backend / API -------------------------------------------------------
+fastapi
+uvicorn
+websockets
+sqlalchemy
+psycopg2-binary
+
+# --- Optional: Paddle runtime required by PaddleOCR ----------------------
+# paddlepaddle

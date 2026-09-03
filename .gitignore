@@ -1,0 +1,31 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# --- Environment ---
+.env
+
+# --- Databases ---
+*.db
+*.sqlite3
+
+# --- Frontend / Node ---
+node_modules/
+frontend/dist/
+
+# --- AI model weights & sample media (downloaded at runtime) ---
+*.pt
+*.onnx
+*.engine
+models/
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
