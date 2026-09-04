@@ -12,7 +12,9 @@ ultralytics          # YOLO object detection + tracking
 supervision>=0.20,<0.31  # ByteTrack multi-object tracking + annotation helpers
 # (supervision 0.31 will drop the built-in ByteTrack; revisit tracking then)
 opencv-python        # video capture (RTSP via FFmpeg) and image ops
-deepface             # face detection / recognition
+deepface             # face detection / recognition (RetinaFace + ArcFace)
+# NOTE: deepface needs TensorFlow, which has no Python 3.14 wheels yet - use
+# Python 3.11 (as in the Docker image) or <= 3.13 for face verification.
 paddleocr            # text recognition (OCR)
 mediapipe            # human pose estimation
 
