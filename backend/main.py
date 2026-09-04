@@ -18,7 +18,7 @@ from .config import settings
 from .database import SessionLocal, init_db
 from .models import Stream
 from .pipeline_manager import pipeline_manager
-from .routers import analytics, health, streams
+from .routers import alerts, analytics, health, streams, watchlist
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -66,6 +66,8 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(streams.router)
 app.include_router(analytics.router)
+app.include_router(alerts.router)
+app.include_router(watchlist.router)
 
 
 @app.websocket("/ws/streams/{stream_id}")

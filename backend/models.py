@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -49,3 +58,55 @@ class Event(Base):
     )
 
     stream: Mapped[Stream | None] = relationship(back_populates="events")
+
+
+class Alert(Base):
+    """An alert event broadcast over ``/ws/alerts`` and served by the API.
+
+    ``timestamp`` is the unix epoch seconds at which the alert occurred at
+    the source (e.g. when an intruder crossed a virtual fence), while
+    ``created_at`` is when the backend received it.
+    """
+
+    __tablename__ = "alerts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    #: originating inference module, e.g. "detection", "fence", "ocr"
+    module: Mapped[str] = mapped_column(String(64), index=True)
+    #: "info" | "warning" | "critical" | ...
+    severity: Mapped[str] = mapped_column(String(16), index=True)
+    message: Mapped[str] = mapped_column(Text)
+    track_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    timestamp: Mapped[float | None] = mapped_column(Float, nullable=True)
+    camera_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    #: base64-encoded frame thumbnail, if any
+    thumbnail_base64: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, default=dt.datetime.utcnow, index=True
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<Alert id={self.id} module={self.module!r} severity={self.severity!r}>"
+
+
+class WatchlistEntry(Base):
+    """SQLAlchemy view of the face watchlist.
+
+    This maps the exact ``watchlist`` table written by
+    ``inference.face_verification.WatchlistManager`` (raw sqlite3), so both
+    the manager (enroll/match via DeepFace) and this ORM model (REST listing)
+    stay consistent on the same SQLite file. Do not change the column layout
+    without changing ``WatchlistManager`` too.
+    """
+
+    __tablename__ = "watchlist"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), index=True)
+    #: embedding model these rows belong to (e.g. "ArcFace")
+    model: Mapped[str] = mapped_column(String(64), index=True)
+    embedding: Mapped[bytes] = mapped_column(LargeBinary)
+    enrolled_at: Mapped[str] = mapped_column(String(32))
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<WatchlistEntry id={self.id} name={self.name!r} model={self.model!r}>"

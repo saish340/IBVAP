@@ -35,5 +35,8 @@ class Settings:
         # How often (per capability) the latest result is persisted as an Event.
         self.persist_interval_seconds: float = float(os.getenv("PERSIST_INTERVAL_SECONDS", "10"))
 
+        # Face watchlist SQLite file (shared by WatchlistManager + /watchlist API).
+        self.watchlist_db_path: str = os.getenv("WATCHLIST_DB", "watchlist.db")
+
 
 settings = Settings()

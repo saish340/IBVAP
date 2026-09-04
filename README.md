@@ -175,12 +175,35 @@ curl -X POST http://localhost:8000/streams -H "Content-Type: application/json" ^
 | POST   | `/analytics/streams/{id}/run/{capability}` | run once on the next frame |
 | GET    | `/analytics/events` | persisted events (`?stream_id=&capability=&limit=`) |
 | WS     | `/ws/streams/{id}` | live JSON results, pushed every ~0.5 s |
+| WS     | `/ws/alerts` | realtime alert stream (broadcast on every ingest) |
+| POST   | `/events/ingest` | store an alert `{module, severity, message, track_id, timestamp, camera_id, thumbnail_base64}` and broadcast it |
+| GET    | `/events/history` | paginated alerts (`?page=&page_size=&module=&severity=&camera_id=`) |
+| GET    | `/watchlist` | list enrolled faces |
+| POST   | `/watchlist/enroll` | enroll a face from `{name, image_base64}` (DeepFace/ArcFace) |
 
 WebSocket example:
 
 ```js
 const ws = new WebSocket("ws://localhost:8000/ws/streams/1");
 ws.onmessage = (e) => console.log(JSON.parse(e.data).results.detection);
+```
+
+Real-time alerts example — any client (React dashboard included) receives
+each ingested alert as it happens:
+
+```js
+const alerts = new WebSocket("ws://localhost:8000/ws/alerts");
+alerts.onmessage = (e) => {
+  const alert = JSON.parse(e.data);       // {id, module, severity, message, track_id, ...}
+  console.log(alert.severity, alert.message);
+};
+```
+
+Or push an alert from any script (e.g. an inference pipeline):
+
+```
+curl -X POST http://localhost:8000/events/ingest -H "Content-Type: application/json" ^
+  -d "{\"module\":\"fence\",\"severity\":\"critical\",\"message\":\"Person#3 entered the restricted zone\",\"track_id\":3,\"camera_id\":\"cam-01\"}"
 ```
 
 ## Adding an inference capability
