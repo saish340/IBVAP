@@ -16,7 +16,10 @@ deepface             # face detection / recognition (RetinaFace + ArcFace)
 # NOTE: deepface needs TensorFlow, which has no Python 3.14 wheels yet - use
 # Python 3.11 (as in the Docker image) or <= 3.13 for face verification.
 paddleocr            # text recognition (OCR)
+paddlepaddle         # Paddle runtime required by PaddleOCR
 mediapipe            # human pose estimation
+shapely              # virtual-fence polygon geometry
+requests              # resilient pipeline HTTP client
 
 # --- Backend / API -------------------------------------------------------
 fastapi
@@ -24,6 +27,3 @@ uvicorn
 websockets
 sqlalchemy
 psycopg2-binary
-
-# --- Optional: Paddle runtime required by PaddleOCR ----------------------
-# paddlepaddle

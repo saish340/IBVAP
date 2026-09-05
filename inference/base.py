@@ -28,6 +28,7 @@ class BaseAnalyzer(ABC):
         self._model: Any = None
         self._loaded = False
         self._lock = threading.Lock()
+        self.annotated_frame: Optional[np.ndarray] = None
 
     # ------------------------------------------------------------- life-cycle
     def ensure_loaded(self) -> None:

@@ -26,6 +26,7 @@ RUN pip install -r requirements.txt
 COPY ingestion ./ingestion
 COPY inference ./inference
 COPY backend ./backend
+COPY yolov8n.pt ./yolov8n.pt
 
 EXPOSE 8000
 

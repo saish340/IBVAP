@@ -11,7 +11,7 @@ and WebSockets. A React + Vite + Tailwind dashboard consumes the API.
 | Inference | Ultralytics YOLO, DeepFace, PaddleOCR, MediaPipe              |
 | Backend   | FastAPI, Uvicorn, WebSockets, SQLAlchemy, PostgreSQL / SQLite |
 | Frontend  | React 18, Vite 5, Tailwind CSS 3                              |
-| Deploy    | Docker Compose (backend + frontend + postgres)                |
+| Deploy    | Docker Compose (backend + frontend + SQLite volume)           |
 
 ## Project structure
 
@@ -38,9 +38,9 @@ ibvap/
 │   ├── pipelines.py           #   per-stream capture → analyze worker
 │   ├── pipeline_manager.py    #   registry of running pipelines
 │   └── routers/               #   health, streams, analytics endpoints
-├── frontend/                  # React + Vite + Tailwind placeholder dashboard
+├── frontend/                  # React + Vite + Tailwind security dashboard
 ├── scripts/                   # fake-CCTV ffmpeg re-streamer + RTSP test viewer
-├── docker-compose.yml         # backend + frontend + postgres
+├── docker-compose.yml         # backend + frontend + SQLite volume
 ├── Dockerfile                 # backend image (python:3.11-slim)
 └── requirements.txt
 ```
@@ -56,9 +56,27 @@ docker compose up --build
 
 * Backend API — http://localhost:8000 (interactive docs at `/docs`)
 * Dashboard — http://localhost:5173
-* Postgres — localhost:5432 (user / pass / db: `ibvap` / `ibvap` / `ibvap`)
+* SQLite data is stored in the `ibvap_data` Docker volume.
 
-Data lives in the `pgdata` volume; `docker compose down -v` wipes it.
+Data lives in the `ibvap_data` volume; `docker compose down -v` wipes it.
+
+## One-command demo
+
+With FFmpeg, Python 3.11, and Node.js installed, the complete local demo can
+be started from Bash or Git Bash with:
+
+```bash
+bash run_demo.sh --reset
+```
+
+It starts the looping RTSP feed, FastAPI backend, inference pipeline, and Vite
+dashboard in that order. The default demo disables face inference so it can
+boot without TensorFlow; remove `--no-faces` from `run_demo.sh` after the full
+AI requirements are installed. Logs are written to `demo-*.log`.
+
+The pipeline writes failed alert POSTs to `pending_events.db`. Every ten
+seconds it checks `/health`, switches back to online mode, and flushes queued
+events in order.
 
 ## Run the backend locally
 

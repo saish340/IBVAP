@@ -37,7 +37,9 @@ import io
 import json
 import logging
 import os
+import sqlite3
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -86,10 +88,14 @@ class PipelineConfig:
     detector_backend: str = "retinaface"
     face_model: str = "ArcFace"
     face_threshold: float = 0.6
-    watchlist_db: str = ""  # "" -> WatchlistManager default "watchlist.db"
+    watchlist_db: str = "watchlist.db"
     flagged_names: Sequence[str] = ()
     # if set, ignores the flag list and alerts on every watchlist match
     alert_all_faces: bool = False
+    night_enhance: bool = True
+    brightness_threshold: int = 50
+    zero_dce_weights: Optional[str] = None
+    pending_events_db: str = "pending_events.db"
 
     # zone
     polygon: Sequence[Tuple[float, float]] = ()
@@ -104,15 +110,104 @@ class PipelineConfig:
 
 # ------------------------------------------------------------ alert client
 class AlertClient:
-    """Thin HTTP client for the backend's ``/events/ingest`` endpooint."""
+    """HTTP alert client with durable SQLite buffering while offline."""
 
-    def __init__(self, base_url: str = "http://localhost:8000") -> None:
+    def __init__(
+        self,
+        base_url: str = "http://localhost:8000",
+        pending_db: str = "pending_events.db",
+        health_interval: float = 10.0,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self._session = requests.Session()
+        self.pending_db = pending_db
+        self._offline = False
+        self._stop_event = threading.Event()
+        self._init_pending_db()
+        self._worker = threading.Thread(
+            target=self._connectivity_loop,
+            args=(health_interval,),
+            name="ibvap-alert-buffer",
+            daemon=True,
+        )
+        self._worker.start()
 
     @property
     def ingest_url(self) -> str:
         return f"{self.base_url}/events/ingest"
+
+    @property
+    def health_url(self) -> str:
+        return f"{self.base_url}/health"
+
+    def close(self) -> None:
+        self._stop_event.set()
+        if self._worker.is_alive():
+            self._worker.join(timeout=2.0)
+        self._session.close()
+
+    def _init_pending_db(self) -> None:
+        with sqlite3.connect(self.pending_db) as db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS pending_events ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL, "
+                "created_at REAL NOT NULL)"
+            )
+
+    def _queue(self, payload: Dict[str, Any]) -> None:
+        with sqlite3.connect(self.pending_db) as db:
+            db.execute(
+                "INSERT INTO pending_events (payload, created_at) VALUES (?, ?)",
+                (json.dumps(payload), time.time()),
+            )
+
+    def _pending(self) -> List[Tuple[int, str]]:
+        with sqlite3.connect(self.pending_db) as db:
+            return db.execute(
+                "SELECT id, payload FROM pending_events ORDER BY id"
+            ).fetchall()
+
+    def _delete_pending(self, event_id: int) -> None:
+        with sqlite3.connect(self.pending_db) as db:
+            db.execute("DELETE FROM pending_events WHERE id = ?", (event_id,))
+
+    def _send(self, payload: Dict[str, Any]) -> bool:
+        try:
+            response = self._session.post(self.ingest_url, json=payload, timeout=10)
+        except requests.RequestException:
+            return False
+        return 200 <= response.status_code < 300
+
+    def _flush(self) -> bool:
+        for event_id, serialized in self._pending():
+            try:
+                payload = json.loads(serialized)
+            except json.JSONDecodeError:
+                logger.error("discarding malformed pending event %s", event_id)
+                self._delete_pending(event_id)
+                continue
+            if not self._send(payload):
+                return False
+            self._delete_pending(event_id)
+        return True
+
+    def _connectivity_loop(self, interval: float) -> None:
+        while not self._stop_event.wait(interval):
+            try:
+                response = self._session.get(self.health_url, timeout=3)
+                online = 200 <= response.status_code < 300
+            except requests.RequestException:
+                online = False
+            if online:
+                if self._offline:
+                    logger.info("backend online - flushing pending events")
+                flushed = self._flush()
+                if self._offline and flushed:
+                    logger.info("online mode restored")
+                self._offline = not flushed
+            elif not self._offline:
+                self._offline = True
+                logger.warning("backend offline - buffering events locally")
 
     def post_alert(
         self,
@@ -135,16 +230,11 @@ class AlertClient:
             "camera_id": camera_id,
             "thumbnail_base64": thumbnail_base64,
         }
-        try:
-            response = self._session.post(self.ingest_url, json=payload, timeout=10)
-        except requests.RequestException as exc:
-            logger.warning("alert POST failed (%s): %s", module, exc)
-            return False
-        if response.status_code < 200 or response.status_code >= 300:
-            logger.warning(
-                "alert POST rejected (%s): HTTP %s %s",
-                module, response.status_code, response.text[:200],
-            )
+        if not self._send(payload):
+            self._queue(payload)
+            if not self._offline:
+                self._offline = True
+                logger.warning("backend offline - buffering events locally")
             return False
         return True
 
@@ -340,6 +430,7 @@ class RTSPPipeline:
             logger.info("interrupted, stopping pipeline")
         finally:
             cap.release()
+            self.alert_client.close()
         logger.info("pipeline stopped: %d frames, %d processed, %d alerts",
                     self.frame_count, self.processed_count, self.alert_count)
         return 0
@@ -347,6 +438,19 @@ class RTSPPipeline:
 # ------------------------------------------------------------- per-frame
     def _process_frame(self, frame: np.ndarray) -> None:
         """Run all engines on one frame and alert on any trigger."""
+        if self.cfg.night_enhance:
+            try:
+                from inference.night_enhance import enhance_frame
+
+                frame, method = enhance_frame(
+                    frame,
+                    brightness_threshold=self.cfg.brightness_threshold,
+                    weights_path=self.cfg.zero_dce_weights,
+                )
+                if method != "passthrough":
+                    logger.debug("low-light preprocessing applied: %s", method)
+            except Exception:
+                logger.exception("night enhancement failed; using original frame")
         try:
             detections = self.engines["detection"].process_frame(frame)
         except Exception as exc:
@@ -450,12 +554,17 @@ def _build_parser() -> argparse.ArgumentParser:
     # faces
     parser.add_argument("--no-faces", action="store_true",
                         help="disable the face engine (no deepface/TF needed)")
-    parser.add_argument("--watchlist-db", default="",
-                        help="watchlist SQLite file (default: WatchlistManager default)")
+    parser.add_argument("--watchlist-db", default="watchlist.db",
+                        help="watchlist SQLite file (default: watchlist.db)")
     parser.add_argument("--flag-names", nargs="*", default=None,
                         help="names that trigger alerts (default: all enrolled)")
     parser.add_argument("--alert-all-faces", action="store_true",
                         help="alert on every watchlist match regardless of flags")
+    parser.add_argument("--no-night-enhance", action="store_true",
+                        help="disable automatic low-light CLAHE preprocessing")
+    parser.add_argument("--brightness-threshold", type=int, default=50)
+    parser.add_argument("--zero-dce-weights", default=None)
+    parser.add_argument("--pending-events-db", default="pending_events.db")
 
     # limits / resilience
     parser.add_argument("--max-frames", type=int, default=0,
@@ -481,6 +590,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         watchlist_db=args.watchlist_db,
         flagged_names=args.flag_names or (),
         alert_all_faces=args.alert_all_faces,
+        night_enhance=not args.no_night_enhance,
+        brightness_threshold=args.brightness_threshold,
+        zero_dce_weights=args.zero_dce_weights,
+        pending_events_db=args.pending_events_db,
         polygon=parse_polygon(args.polygon) if args.polygon else (),
         zone_name=args.zone_name,
         inside_threshold=args.inside_threshold,
@@ -500,7 +613,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         engines = build_engines(cfg)
 
-    pipeline = RTSPPipeline(cfg=cfg, engines=engines)
+    pipeline = RTSPPipeline(
+        cfg=cfg,
+        engines=engines,
+        alert_client=AlertClient(cfg.api_url, pending_db=cfg.pending_events_db),
+    )
     return pipeline.run()
 
 

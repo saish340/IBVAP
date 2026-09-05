@@ -50,7 +50,7 @@ __all__ = [
 
 def list_capabilities() -> list[str]:
     """Return the names of all registered capabilities."""
-    return sorted(ANALYZERS)
+    return sorted(set(ANALYZERS) | {"face_verification", "anpr"})
 
 
 def get_analyzer(name: str, **kwargs: Any) -> BaseAnalyzer:

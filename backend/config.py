@@ -37,6 +37,11 @@ class Settings:
 
         # Face watchlist SQLite file (shared by WatchlistManager + /watchlist API).
         self.watchlist_db_path: str = os.getenv("WATCHLIST_DB", "watchlist.db")
+        self.alert_ingest_url: str = os.getenv(
+            "ALERT_INGEST_URL", "http://127.0.0.1:8000/events/ingest"
+        )
+        self.night_enhance_enabled: bool = os.getenv("NIGHT_ENHANCE", "1") != "0"
+        self.brightness_threshold: int = int(os.getenv("BRIGHTNESS_THRESHOLD", "50"))
 
 
 settings = Settings()

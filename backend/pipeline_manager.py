@@ -53,6 +53,11 @@ class PipelineManager:
             pipeline = self._pipelines.get(stream_id)
         return pipeline.snapshot() if pipeline is not None else None
 
+    def get(self, stream_id: int) -> Optional[StreamPipeline]:
+        """Return an active pipeline for direct frame access."""
+        with self._lock:
+            return self._pipelines.get(stream_id)
+
     def get_or_create(
         self, stream_id: int, source_url: str, capabilities: Sequence[str]
     ) -> StreamPipeline:

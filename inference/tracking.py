@@ -8,6 +8,8 @@ import numpy as np
 
 from .base import BaseAnalyzer
 
+TRACK_CLASSES = {"person", "car", "truck", "motorcycle", "bus"}
+
 
 class ObjectTracker(BaseAnalyzer):
     """Track objects across frames (YOLO + ByteTrack/BoT-SORT).
@@ -42,18 +44,23 @@ class ObjectTracker(BaseAnalyzer):
             persist=True,
             tracker=self.tracker,
             conf=self.confidence,
+            classes=[0, 2, 3, 5, 7],
             device=self.device,
             verbose=False,
         )
         tracks: List[Dict[str, Any]] = []
         for result in results:
+            self.annotated_frame = result.plot()
             names = result.names
             for box in getattr(result, "boxes", None) or []:
                 track_id = box.id
+                class_name = names.get(int(box.cls), str(int(box.cls)))
+                if class_name not in TRACK_CLASSES:
+                    continue
                 tracks.append(
                     {
                         "track_id": int(track_id) if track_id is not None else None,
-                        "class": names.get(int(box.cls), str(int(box.cls))),
+                        "class": class_name,
                         "confidence": round(float(box.conf), 4),
                         "bbox": [round(float(v), 1) for v in box.xyxy[0].tolist()],
                     }

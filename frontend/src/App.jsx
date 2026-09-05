@@ -1,146 +1,178 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-const API_BASE = "/api";
+const API = "/api";
 
-async function getJSON(path, fallback) {
-  try {
-    const response = await fetch(`${API_BASE}${path}`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return await response.json();
-  } catch {
-    return fallback;
-  }
+async function request(path, options = {}) {
+  const response = await fetch(`${API}${path}`, options);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
 }
 
-const CAPABILITY_INFO = {
-  detection: ["🎯", "Object detection", "YOLO (Ultralytics)"],
-  tracking: ["🧭", "Multi-object tracking", "YOLO + ByteTrack"],
-  face_recognition: ["🧑", "Face recognition", "DeepFace"],
-  ocr: ["🔤", "Text recognition", "PaddleOCR"],
-  pose: ["🤸", "Pose estimation", "MediaPipe"],
-};
+function severityStyle(severity) {
+  if (severity === "critical" || severity === "intrusion") return "border-red-500/40 bg-red-500/10 text-red-200";
+  if (severity === "warning" || severity === "face_match") return "border-amber-400/40 bg-amber-400/10 text-amber-100";
+  return "border-slate-700 bg-slate-900 text-slate-300";
+}
+
+function Panel({ title, action, children, className = "" }) {
+  return (
+    <section className={`border border-slate-800 bg-slate-950/70 ${className}`}>
+      <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+        <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">{title}</h2>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
 
 export default function App() {
   const [health, setHealth] = useState(null);
-  const [streams, setStreams] = useState(null);
-  const [capabilities, setCapabilities] = useState([]);
+  const [streams, setStreams] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
+  const [alerts, setAlerts] = useState([]);
+  const [history, setHistory] = useState({ items: [], total: 0 });
+  const [watchlist, setWatchlist] = useState([]);
+  const [name, setName] = useState("");
+  const [image, setImage] = useState("");
+  const [message, setMessage] = useState("");
+  const [enrolling, setEnrolling] = useState(false);
+  const [frameNonce, setFrameNonce] = useState(Date.now());
+  const [analysis, setAnalysis] = useState(null);
+  const selected = useMemo(() => streams.find((stream) => stream.id === selectedId), [streams, selectedId]);
+
+  async function refresh() {
+    try {
+      const [service, streamData, eventData, people] = await Promise.all([
+        request("/health"), request("/streams"), request("/events/history?page_size=12"), request("/watchlist"),
+      ]);
+      setHealth(service);
+      setStreams(streamData);
+      setHistory(eventData);
+      setWatchlist(people);
+      setSelectedId((current) => current ?? streamData.find((stream) => stream.running)?.id ?? streamData[0]?.id ?? null);
+    } catch {
+      setHealth(null);
+    }
+  }
 
   useEffect(() => {
-    getJSON("/health", null).then(setHealth);
-    getJSON("/streams", []).then(setStreams);
-    getJSON("/analytics/capabilities", { capabilities: [] }).then((data) =>
-      setCapabilities(data.capabilities ?? []),
-    );
+    refresh();
+    const timer = setInterval(refresh, 10000);
+    return () => clearInterval(timer);
   }, []);
 
+  useEffect(() => {
+    if (!selectedId) return undefined;
+    const timer = setInterval(() => setFrameNonce(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId) return undefined;
+    let active = true;
+    const poll = async () => {
+      try {
+        const result = await request(`/analytics/streams/${selectedId}/results`);
+        if (active) setAnalysis(result.results ?? null);
+      } catch {
+        if (active) setAnalysis(null);
+      }
+    };
+    poll();
+    const timer = setInterval(poll, 2000);
+    return () => { active = false; clearInterval(timer); };
+  }, [selectedId]);
+
+  useEffect(() => {
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    let socket;
+    let retryTimer;
+    let active = true;
+    const connect = () => {
+      if (!active) return;
+      socket = new WebSocket(`${protocol}://${window.location.host}/ws/alerts`);
+      socket.onmessage = (event) => {
+        const alert = JSON.parse(event.data);
+        setAlerts((current) => [alert, ...current].slice(0, 30));
+        setHistory((current) => ({ ...current, items: [alert, ...current.items].slice(0, 12), total: current.total + 1 }));
+      };
+      socket.onclose = () => { if (active) retryTimer = setTimeout(connect, 2000); };
+    };
+    connect();
+    return () => { active = false; clearTimeout(retryTimer); socket?.close(); };
+  }, []);
+
+  async function enroll(event) {
+    event.preventDefault();
+    if (!name.trim()) {
+      setMessage("Enter a person name first.");
+      return;
+    }
+    if (!image) {
+      setMessage("Choose a face photo first.");
+      return;
+    }
+    setEnrolling(true);
+    setMessage("Processing face with RetinaFace and ArcFace...");
+    try {
+      await request("/watchlist/enroll", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim(), image_base64: image }) });
+      setMessage(`${name} added to watchlist`);
+      setName(""); setImage(""); refresh();
+    } catch (error) {
+      setMessage(`Enrollment failed: ${error.message}`);
+    } finally {
+      setEnrolling(false);
+    }
+  }
+
+  function selectImage(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setImage(reader.result);
+    reader.readAsDataURL(file);
+  }
+
+  const frameUrl = selected ? `${API}/streams/${selected.id}/frame.jpg` : "";
   const online = health?.status === "ok";
-  const degraded = health?.status === "degraded";
-  const badge = online
-    ? "bg-emerald-500/10 text-emerald-400 ring-emerald-500/30"
-    : degraded
-      ? "bg-amber-500/10 text-amber-400 ring-amber-500/30"
-      : "bg-rose-500/10 text-rose-400 ring-rose-500/30";
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <header className="border-b border-slate-800/60 px-6 py-4">
-        <div className="mx-auto flex max-w-6xl items-center justify-between">
-          <h1 className="text-xl font-semibold tracking-tight">
-            IBVAP{" "}
-            <span className="ml-2 hidden text-sm font-normal text-slate-400 sm:inline">
-              Real-Time Video Analytics Platform
-            </span>
-          </h1>
-          <span className={`rounded-full px-3 py-1 text-xs font-medium ring-1 ${badge}`}>
-            {health ? `backend: ${health.status}` : "backend: offline"}
-          </span>
+    <div className="min-h-screen bg-[#071014] text-slate-100">
+      <header className="border-b border-cyan-950/70 bg-[#0a171c] px-5 py-4 md:px-8">
+        <div className="mx-auto flex max-w-[1500px] items-center justify-between">
+          <div><p className="text-xs font-bold tracking-[0.35em] text-cyan-400">IBVAP / CONTROL ROOM</p><h1 className="mt-1 text-2xl font-semibold tracking-tight">Live video intelligence</h1></div>
+          <div className="flex items-center gap-3 text-xs uppercase tracking-widest text-slate-400"><span className={`h-2 w-2 rounded-full ${online ? "bg-emerald-400" : "bg-red-400"}`} />{online ? "System online" : "Backend offline"}</div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl space-y-8 p-6">
-        <section>
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-              Streams
-            </h2>
-            <code className="rounded bg-slate-900 px-2 py-1 text-xs text-slate-400">
-              POST /api/streams
-            </code>
-          </div>
-          {streams === null ? (
-            <p className="text-sm text-slate-500">Loading…</p>
-          ) : streams.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-slate-800 p-8 text-center text-sm text-slate-500">
-              <p>No streams yet.</p>
-              <p className="mt-2">
-                Add one via <code className="text-slate-300">POST /api/streams</code> — see the
-                README for an example curl command.
-              </p>
+      <main className="mx-auto grid max-w-[1500px] gap-5 p-5 md:p-8 lg:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.75fr)]">
+        <div className="space-y-5">
+          <Panel title="Live camera" action={selected && <span className="text-xs text-slate-500">{selected.name} / {selected.running ? "streaming" : "stopped"}</span>}>
+            <div className="aspect-video bg-black">
+              {frameUrl ? <img key={frameNonce} src={`${frameUrl}?t=${frameNonce}`} className="h-full w-full object-contain" alt="Latest camera frame" /> : <div className="flex h-full items-center justify-center text-sm text-slate-600">Register a stream to begin</div>}
             </div>
-          ) : (
-            <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {streams.map((stream) => (
-                <li
-                  key={stream.id}
-                  className="rounded-xl border border-slate-800 bg-slate-900/50 p-4"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium">{stream.name}</span>
-                    <span
-                      className={`h-2.5 w-2.5 rounded-full ${
-                        stream.running ? "bg-emerald-400" : "bg-slate-600"
-                      }`}
-                      title={stream.running ? "analyzing" : "stopped"}
-                    />
-                  </div>
-                  <p className="mt-1 truncate text-xs text-slate-500" title={stream.source_url}>
-                    {stream.source_url}
-                  </p>
-                  <div className="mt-3 flex flex-wrap gap-1">
-                    {stream.capabilities.map((cap) => (
-                      <span
-                        key={cap}
-                        className="rounded bg-slate-800 px-2 py-0.5 text-[11px] text-slate-300"
-                      >
-                        {CAPABILITY_INFO[cap]?.[0] ?? "•"} {cap}
-                      </span>
-                    ))}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+            <div className="flex flex-wrap gap-2 border-t border-slate-800 p-4">{streams.map((stream) => <button key={stream.id} onClick={() => setSelectedId(stream.id)} className={`border px-3 py-2 text-left text-xs ${selectedId === stream.id ? "border-cyan-400 bg-cyan-400/10 text-cyan-200" : "border-slate-700 text-slate-400"}`}><span className="font-semibold">{stream.name}</span><span className="ml-2 text-slate-600">{stream.running ? "LIVE" : "OFFLINE"}</span></button>)}</div>
+            {analysis && <div className="grid gap-2 border-t border-slate-800 p-4 text-xs sm:grid-cols-3">{analysis.tracking && <div className="border border-cyan-900 bg-cyan-400/5 p-3"><p className="uppercase tracking-widest text-cyan-500">Tracking</p><p className="mt-2 text-lg text-cyan-200">{analysis.tracking.count} active</p>{analysis.tracking.tracks?.map((track) => <p key={`${track.track_id}-${track.bbox?.join("-")}`} className="text-slate-400">{track.class} / ID {track.track_id} / {(track.confidence * 100).toFixed(0)}%</p>)}</div>}{analysis.face_verification && <div className="border border-amber-900 bg-amber-400/5 p-3"><p className="uppercase tracking-widest text-amber-500">Faces</p><p className="mt-2 text-lg text-amber-200">{analysis.face_verification.count} detected</p>{analysis.face_verification.faces?.map((face, index) => <p key={`${face.name}-${index}`} className="text-slate-400">{face.name} / {(face.confidence * 100).toFixed(0)}%</p>)}</div>}{analysis.anpr && <div className="border border-slate-700 bg-slate-900 p-3"><p className="uppercase tracking-widest text-slate-500">ANPR</p><p className="mt-2 text-lg text-slate-200">{analysis.anpr.count} plates</p></div>}</div>}
+          </Panel>
 
-        <section>
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-400">
-            Inference capabilities
-          </h2>
-          {capabilities.length === 0 ? (
-            <p className="text-sm text-slate-500">Backend unreachable — is it running on :8000?</p>
-          ) : (
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {capabilities.map((cap) => {
-                const [icon, title, stack] = CAPABILITY_INFO[cap] ?? ["•", cap, ""];
-                return (
-                  <div
-                    key={cap}
-                    className="rounded-xl border border-slate-800 bg-slate-900/50 p-4"
-                  >
-                    <div className="text-2xl">{icon}</div>
-                    <div className="mt-2 font-medium">{title}</div>
-                    <div className="text-xs text-slate-500">{stack}</div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
+          <Panel title="Event history" action={<span className="text-xs text-slate-500">{history.total} recorded</span>}>
+            <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead className="text-xs uppercase tracking-wider text-slate-600"><tr><th className="px-5 py-3">Time</th><th className="px-5 py-3">Module</th><th className="px-5 py-3">Event</th><th className="px-5 py-3">Camera</th></tr></thead><tbody>{history.items.map((event) => <tr key={event.id} className="border-t border-slate-900"><td className="whitespace-nowrap px-5 py-3 text-xs text-slate-500">{event.timestamp ? new Date(event.timestamp * 1000).toLocaleTimeString() : "-"}</td><td className="px-5 py-3"><span className={`border px-2 py-1 text-xs ${severityStyle(event.severity)}`}>{event.module}</span></td><td className="max-w-[420px] truncate px-5 py-3 text-slate-300">{event.message}</td><td className="px-5 py-3 text-xs text-slate-500">{event.camera_id || "-"}</td></tr>)}</tbody></table>{history.items.length === 0 && <p className="px-5 py-8 text-sm text-slate-600">No events recorded.</p>}</div>
+          </Panel>
+        </div>
 
-        <p className="pt-4 text-center text-xs text-slate-600">
-          Placeholder dashboard — wire up live video (WebSocket /ws/streams/&#123;id&#125;) and
-          result rendering next.
-        </p>
+        <aside className="space-y-5">
+          <Panel title="Realtime alerts" action={<span className="text-xs text-cyan-500">WS /alerts</span>}>
+            <div className="max-h-[360px] space-y-2 overflow-y-auto p-4">{alerts.length === 0 ? <p className="py-8 text-sm text-slate-600">Listening for alerts...</p> : alerts.map((alert) => <article key={alert.id} className={`border p-3 ${severityStyle(alert.severity)}`}><div className="flex justify-between gap-3 text-xs uppercase tracking-wider"><span>{alert.module}</span><time>{alert.timestamp ? new Date(alert.timestamp * 1000).toLocaleTimeString() : "now"}</time></div><p className="mt-2 text-sm">{alert.message}</p></article>)}</div>
+          </Panel>
+
+          <Panel title="Watchlist enrollment">
+            <form onSubmit={enroll} className="space-y-3 p-5"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Person name" className="w-full border border-slate-700 bg-slate-900 px-3 py-2 text-sm outline-none focus:border-cyan-400" /><input type="file" accept="image/*" onChange={selectImage} className="w-full text-xs text-slate-400 file:mr-3 file:border-0 file:bg-cyan-500 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-slate-950" /><button disabled={enrolling} className="w-full bg-cyan-400 px-3 py-2 text-sm font-bold text-slate-950 hover:bg-cyan-300 disabled:cursor-wait disabled:opacity-50">{enrolling ? "Processing..." : "Enroll face"}</button>{message && <p role="status" className="text-xs text-cyan-300">{message}</p>}</form>
+            <div className="border-t border-slate-800 px-5 py-4">{watchlist.length === 0 ? <p className="text-sm text-slate-600">No enrolled people.</p> : <ul className="space-y-2">{watchlist.map((person) => <li key={person.id} className="flex justify-between text-sm"><span>{person.name}</span><span className="text-xs text-slate-600">{person.model}</span></li>)}</ul>}</div>
+          </Panel>
+
+          <Panel title="Streams"><div className="divide-y divide-slate-900">{streams.length === 0 ? <p className="p-5 text-sm text-slate-600">No cameras registered.</p> : streams.map((stream) => <div key={stream.id} className="flex items-center justify-between p-4"><div><p className="text-sm font-medium">{stream.name}</p><p className="mt-1 max-w-[230px] truncate text-xs text-slate-600">{stream.source_url}</p></div><span className={`text-xs ${stream.running ? "text-emerald-400" : "text-slate-600"}`}>{stream.running ? "RUNNING" : "STOPPED"}</span></div>)}</div></Panel>
+        </aside>
       </main>
     </div>
   );

@@ -14,7 +14,11 @@ import threading
 import time
 from typing import Any, Dict, Optional, Sequence
 
+import cv2
+import requests
+
 from ingestion import RTSPCapture, VideoFileCapture
+from ingestion.webcam import WebcamCapture
 from inference import BaseAnalyzer, get_analyzer
 
 from .config import settings
@@ -24,16 +28,65 @@ from .models import Event
 logger = logging.getLogger(__name__)
 
 
+class FaceVerificationAnalyzer:
+    """Adapter for the stateful ArcFace watchlist engine."""
+
+    name = "face_verification"
+
+    def __init__(self) -> None:
+        from inference.face_verification import FaceVerificationEngine
+
+        self.engine = FaceVerificationEngine(
+            db_path=settings.watchlist_db_path,
+            detector_backend="retinaface",
+            model_name="ArcFace",
+            draw=True,
+        )
+        self.annotated_frame = None
+
+    def process(self, frame):
+        results = self.engine.process_frame(frame, draw=True)
+        self.annotated_frame = self.engine.annotated_frame
+        return {"capability": self.name, "faces": results, "count": len(results)}
+
+
+class ANPRAnalyzer:
+    """Adapter for the stateful ANPR engine."""
+
+    name = "anpr"
+
+    def __init__(self) -> None:
+        from inference.anpr import ANPREngine
+
+        self.engine = ANPREngine()
+        self.annotated_frame = None
+
+    def process(self, frame):
+        plates = self.engine.process_frame(frame)
+        return {"capability": self.name, "plates": plates, "count": len(plates)}
+
+    def close(self):
+        self.engine.close()
+
+
 def build_analyzer(name: str) -> BaseAnalyzer:
     """Create an analyzer, applying global settings where relevant."""
     kwargs: Dict[str, Any] = {}
     if name in ("detection", "tracking"):
         kwargs["model_name"] = settings.yolo_model
+    if name == "face_verification":
+        return FaceVerificationAnalyzer()  # type: ignore[return-value]
+    if name == "anpr":
+        return ANPRAnalyzer()  # type: ignore[return-value]
     return get_analyzer(name, **kwargs)
 
 
 def create_capture(source_url: str):
     """Pick the right capture backend for a source URL."""
+    if source_url.strip().isdigit():
+        return WebcamCapture(
+            int(source_url.strip()), reconnect_delay=settings.rtsp_reconnect_delay
+        )
     if source_url.lower().startswith(("rtsp://", "rtsps://")):
         return RTSPCapture(source_url, reconnect_delay=settings.rtsp_reconnect_delay)
     return VideoFileCapture(source_url, loop=True)
@@ -57,9 +110,15 @@ class StreamPipeline:
         self._stop_event = threading.Event()
         self._results_lock = threading.Lock()
         self._results: Dict[str, Dict[str, Any]] = {}
+        self._latest_frame = None
         self._last_frame_id = 0
         self._frames_seen = 0
         self._next_persist_at: Dict[str, float] = {}
+        self._zone_monitor = None
+        self._alert_last: Dict[str, float] = {}
+        self._last_observability_log = 0.0
+        if "tracking" in self.capabilities:
+            logger.info("[FENCE] Zone monitor will initialize with the first frame size")
 
     # ------------------------------------------------------------- life-cycle
     def start(self) -> None:
@@ -81,6 +140,10 @@ class StreamPipeline:
             self._thread.join(timeout=timeout)
         self._thread = None
         self.capture.stop(timeout=timeout)
+        for analyzer in self.analyzers.values():
+            close = getattr(analyzer, "close", None)
+            if close:
+                close()
 
     @property
     def is_running(self) -> bool:
@@ -96,7 +159,17 @@ class StreamPipeline:
             "running": self.is_running,
             "frames_seen": self._frames_seen,
             "results": results,
+            "frame_available": self._latest_frame is not None,
         }
+
+    def latest_frame_jpeg(self) -> Optional[bytes]:
+        """Return the most recent frame encoded for browser polling."""
+        with self._results_lock:
+            frame = None if self._latest_frame is None else self._latest_frame.copy()
+        if frame is None:
+            return None
+        ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+        return encoded.tobytes() if ok else None
 
     def run_once(self, capability: str, timeout: float = 5.0) -> Optional[Dict[str, Any]]:
         """Run one capability on the next available frame (on demand)."""
@@ -120,17 +193,54 @@ class StreamPipeline:
                 continue
             self._last_frame_id = frame.frame_id
             self._frames_seen += 1
+            with self._results_lock:
+                self._latest_frame = frame.data.copy()
+            if self._frames_seen == 1 or self._frames_seen % 100 == 0:
+                logger.info("[STREAM] Frame received: stream=%s count=%s", self.stream_id, self._frames_seen)
             # Analyze every Nth frame to keep CPU usage sane.
             if self._frames_seen % settings.process_every_n_frames:
                 continue
+            working_frame = frame.data
+            if "tracking" in self.capabilities and self._zone_monitor is None:
+                try:
+                    from inference.virtual_fence import ZoneMonitor
+
+                    height, width = working_frame.shape[:2]
+                    self._zone_monitor = ZoneMonitor(
+                        [(0.1 * width, 0.35 * height), (0.9 * width, 0.35 * height),
+                         (0.9 * width, 0.95 * height), (0.1 * width, 0.95 * height)],
+                        zone_name="restricted", inside_threshold=2,
+                    )
+                    logger.info("[FENCE] Zone monitor ready for %sx%s", width, height)
+                except Exception:
+                    logger.exception("[FENCE] failed to initialize zone monitor")
+            if settings.night_enhance_enabled:
+                try:
+                    from inference.night_enhance import enhance_frame
+
+                    working_frame, method = enhance_frame(
+                        working_frame,
+                        brightness_threshold=settings.brightness_threshold,
+                    )
+                    if method != "passthrough":
+                        logger.info("[NIGHT] Enhancement activated: %s", method)
+                except Exception:
+                    logger.exception("[NIGHT] enhancement failed; using original frame")
+            with self._results_lock:
+                self._latest_frame = working_frame.copy()
+            payloads = {}
             for name, analyzer in list(self.analyzers.items()):
-                self._run_analyzer(name, analyzer, frame)
+                payload = self._run_analyzer(name, analyzer, frame, working_frame)
+                payloads[name] = payload
+                self._handle_module_events(name, payload, working_frame)
+            with self._results_lock:
+                self._latest_frame = self._annotate_frame(working_frame, payloads)
         logger.info("Pipeline stopped for stream %s", self.stream_id)
 
-    def _run_analyzer(self, name: str, analyzer: BaseAnalyzer, frame) -> Dict[str, Any]:
+    def _run_analyzer(self, name: str, analyzer: BaseAnalyzer, frame, image=None) -> Dict[str, Any]:
         started = time.perf_counter()
         try:
-            result = analyzer.process(frame.data)
+            result = analyzer.process(image if image is not None else frame.data)
         except Exception as exc:  # one failing capability must not kill the pipeline
             logger.exception("Analyzer '%s' failed on stream %s", name, self.stream_id)
             result = {"capability": name, "error": str(exc)}
@@ -143,8 +253,90 @@ class StreamPipeline:
         }
         with self._results_lock:
             self._results[name] = payload
+            annotated = getattr(analyzer, "annotated_frame", None)
+            if annotated is not None:
+                self._latest_frame = annotated.copy()
         self._maybe_persist(name, payload)
+        if name in ("tracking", "face_verification", "anpr"):
+            logger.info("[%s] Results: %s", name.upper(), payload.get("count", 0))
         return payload
+
+    def _handle_module_events(self, name: str, payload: Dict[str, Any], image) -> None:
+        if name == "tracking" and self._zone_monitor is not None:
+            events = self._zone_monitor.update(payload.get("tracks", []), payload.get("timestamp"))
+            for event in events:
+                logger.info("[FENCE] Intrusion detected: %s", event)
+                self._emit_alert(
+                    module="fence", severity="critical",
+                    message=f"{event['class']}#{event['track_id']} entered zone '{event['zone_name']}'",
+                    track_id=event["track_id"], timestamp=event["timestamp"], image=image,
+                )
+        elif name == "face_verification":
+            for face in payload.get("faces", []):
+                if face.get("name") == "UNKNOWN":
+                    continue
+                logger.info("[FACE] Watchlist match: %s/%.3f", face["name"], face.get("confidence", 0.0))
+                self._emit_alert(
+                    module="face_verification", severity="warning",
+                    message=f"watchlist face '{face['name']}' matched (conf {face.get('confidence', 0.0):.2f})",
+                    track_id=None, timestamp=time.time(), image=image,
+                    dedupe_key=f"face:{face['name']}",
+                )
+        elif name == "anpr":
+            for plate in payload.get("plates", []):
+                logger.info("[ANPR] Plate detected: %s", plate.get("plate_text"))
+                self._emit_alert(
+                    module="anpr", severity="info",
+                    message=f"plate {plate['plate_text']} read (conf {plate.get('confidence', 0.0):.2f})",
+                    track_id=None, timestamp=time.time(), image=image,
+                    dedupe_key=f"plate:{plate['plate_text']}",
+                )
+
+    def _emit_alert(self, *, module, severity, message, track_id, timestamp, image, dedupe_key=None):
+        key = dedupe_key or f"{module}:{track_id}:{message}"
+        now = time.time()
+        if now - self._alert_last.get(key, 0.0) < 10.0:
+            return
+        self._alert_last[key] = now
+        thumbnail = None
+        ok, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
+        if ok:
+            import base64
+
+            thumbnail = base64.b64encode(encoded.tobytes()).decode("ascii")
+        try:
+            response = requests.post(
+                settings.alert_ingest_url,
+                json={"module": module, "severity": severity, "message": message,
+                      "track_id": track_id, "timestamp": timestamp,
+                      "camera_id": str(self.stream_id), "thumbnail_base64": thumbnail},
+                timeout=5,
+            )
+            response.raise_for_status()
+            logger.info("[ALERT] Alert emitted: %s", message)
+        except requests.RequestException:
+            logger.exception("[ALERT] Failed to emit alert")
+
+    def _annotate_frame(self, frame, payloads: Dict[str, Dict[str, Any]]):
+        """Render boxes from actual module results onto the published frame."""
+        scene = frame.copy()
+        tracking = payloads.get("tracking", {})
+        for track in tracking.get("tracks", []):
+            x1, y1, x2, y2 = (int(value) for value in track["bbox"])
+            inside = self._zone_monitor is not None and self._zone_monitor.is_inside(track["bbox"])
+            color = (0, 0, 255) if inside else (0, 220, 0)
+            label = f"{track['class'].upper()}  ID: {track.get('track_id')}  {track.get('confidence', 0.0) * 100:.0f}%"
+            cv2.rectangle(scene, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(scene, label, (x1, max(y1 - 8, 18)), cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 2, cv2.LINE_AA)
+        for face in payloads.get("face_verification", {}).get("faces", []):
+            x1, y1, x2, y2 = (int(value) for value in face["bbox"])
+            color = (0, 200, 0) if face.get("name") != "UNKNOWN" else (0, 0, 220)
+            label = f"FACE: {face.get('name', 'UNKNOWN')}  {face.get('confidence', 0.0) * 100:.0f}%"
+            cv2.rectangle(scene, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(scene, label, (x1, min(y2 + 20, scene.shape[0] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 2, cv2.LINE_AA)
+        if self._zone_monitor is not None:
+            self._zone_monitor.draw_polygon(scene)
+        return scene
 
     def _maybe_persist(self, name: str, payload: Dict[str, Any]) -> None:
         """Persist the latest result as an Event row every N seconds."""

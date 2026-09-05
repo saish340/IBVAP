@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from inference import list_capabilities
@@ -75,6 +75,18 @@ def create_stream(payload: StreamCreate, db: Session = Depends(get_db)):
 @router.get("/{stream_id}", response_model=StreamOut, summary="Get one stream")
 def get_stream(stream_id: int, db: Session = Depends(get_db)):
     return _to_out(_get_stream(db, stream_id))
+
+
+@router.get("/{stream_id}/frame.jpg", summary="Get the latest stream frame")
+def latest_frame(stream_id: int):
+    pipeline = pipeline_manager.snapshot(stream_id)
+    if pipeline is None:
+        raise HTTPException(status_code=404, detail=f"Stream {stream_id} is not running")
+    stream_pipeline = pipeline_manager.get(stream_id)
+    jpeg = stream_pipeline.latest_frame_jpeg() if stream_pipeline else None
+    if jpeg is None:
+        raise HTTPException(status_code=404, detail="No frame available yet")
+    return Response(content=jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 @router.delete("/{stream_id}", summary="Delete a stream and stop its pipeline")
