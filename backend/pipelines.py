@@ -19,6 +19,13 @@ import requests
 
 from ingestion import RTSPCapture, VideoFileCapture
 from ingestion.webcam import WebcamCapture
+from inference.degradation_monitor import (
+    CONDITION_BLURRY,
+    CONDITION_LOW_LIGHT,
+    CONDITION_NOISY,
+    ConditionMonitor,
+    DegradationReport,
+)
 from inference import BaseAnalyzer, get_analyzer
 
 from .config import settings
@@ -106,6 +113,11 @@ class StreamPipeline:
                 self.analyzers[name] = build_analyzer(name)
             except ValueError:
                 logger.warning("Stream %s: unknown capability '%s' skipped", stream_id, name)
+        self._base_confidences = {
+            name: float(getattr(analyzer, "confidence"))
+            for name, analyzer in self.analyzers.items()
+            if hasattr(analyzer, "confidence")
+        }
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._results_lock = threading.Lock()
@@ -117,6 +129,10 @@ class StreamPipeline:
         self._zone_monitor = None
         self._alert_last: Dict[str, float] = {}
         self._last_observability_log = 0.0
+        self._condition_monitor = ConditionMonitor(history_size=10)
+        self._degradation = DegradationReport(
+            condition="CLEAR", severity=0.0, raw_metrics={}
+        )
         if "tracking" in self.capabilities:
             logger.info("[FENCE] Zone monitor will initialize with the first frame size")
 
@@ -160,6 +176,7 @@ class StreamPipeline:
             "frames_seen": self._frames_seen,
             "results": results,
             "frame_available": self._latest_frame is not None,
+            "degradation": self._degradation.as_dict(),
         }
 
     def latest_frame_jpeg(self) -> Optional[bytes]:
@@ -193,10 +210,17 @@ class StreamPipeline:
                 continue
             self._last_frame_id = frame.frame_id
             self._frames_seen += 1
+            self._degradation = self._condition_monitor.process_frame(frame.data)
             with self._results_lock:
                 self._latest_frame = frame.data.copy()
             if self._frames_seen == 1 or self._frames_seen % 100 == 0:
-                logger.info("[STREAM] Frame received: stream=%s count=%s", self.stream_id, self._frames_seen)
+                logger.info(
+                    "[STREAM] Frame received: stream=%s count=%s condition=%s severity=%.2f",
+                    self.stream_id,
+                    self._frames_seen,
+                    self._degradation.condition,
+                    self._degradation.severity,
+                )
             # Analyze every Nth frame to keep CPU usage sane.
             if self._frames_seen % settings.process_every_n_frames:
                 continue
@@ -214,7 +238,11 @@ class StreamPipeline:
                     logger.info("[FENCE] Zone monitor ready for %sx%s", width, height)
                 except Exception:
                     logger.exception("[FENCE] failed to initialize zone monitor")
-            if settings.night_enhance_enabled:
+            degraded = self._degradation.condition in (
+                CONDITION_BLURRY,
+                CONDITION_NOISY,
+            ) or self._degradation.severity > 0.6
+            if settings.night_enhance_enabled and self._degradation.condition == CONDITION_LOW_LIGHT:
                 try:
                     from inference.night_enhance import enhance_frame
 
@@ -226,6 +254,13 @@ class StreamPipeline:
                         logger.info("[NIGHT] Enhancement activated: %s", method)
                 except Exception:
                     logger.exception("[NIGHT] enhancement failed; using original frame")
+            for name, analyzer in self.analyzers.items():
+                if hasattr(analyzer, "confidence") and name in self._base_confidences:
+                    analyzer.confidence = (
+                        max(0.1, self._base_confidences[name] * 0.65)
+                        if degraded
+                        else self._base_confidences[name]
+                    )
             with self._results_lock:
                 self._latest_frame = working_frame.copy()
             payloads = {}
