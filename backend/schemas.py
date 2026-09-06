@@ -69,6 +69,8 @@ class AlertCreate(BaseModel):
     thumbnail_base64: Optional[str] = Field(
         default=None, description="base64-encoded JPEG/PNG frame thumbnail"
     )
+    detection_condition: Optional[str] = Field(default=None, max_length=32)
+    detection_reliability_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class AlertOut(BaseModel):
@@ -84,6 +86,8 @@ class AlertOut(BaseModel):
     timestamp: Optional[float]
     camera_id: Optional[str]
     thumbnail_base64: Optional[str]
+    detection_condition: Optional[str]
+    detection_reliability_score: Optional[float]
     created_at: dt.datetime
 
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from .config import settings
@@ -50,6 +50,14 @@ def init_db() -> None:
 
     main_tables = [t for t in Base.metadata.sorted_tables if t.name != "watchlist"]
     Base.metadata.create_all(bind=engine, tables=main_tables)
+    # Keep existing hackathon SQLite files compatible with new alert fields.
+    if engine.url.drivername == "sqlite":
+        existing = {column["name"] for column in inspect(engine).get_columns("alerts")}
+        with engine.begin() as connection:
+            if "detection_condition" not in existing:
+                connection.execute(text("ALTER TABLE alerts ADD COLUMN detection_condition VARCHAR(32)"))
+            if "detection_reliability_score" not in existing:
+                connection.execute(text("ALTER TABLE alerts ADD COLUMN detection_reliability_score FLOAT"))
     Base.metadata.tables["watchlist"].create(bind=watchlist_engine, checkfirst=True)
 
 

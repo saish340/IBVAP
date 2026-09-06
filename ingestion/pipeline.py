@@ -48,6 +48,15 @@ import cv2
 import numpy as np
 import requests  # part of the FastAPI/uvicorn stack
 
+from inference.degradation_monitor import (
+    CONDITION_BLURRY,
+    CONDITION_CLEAR,
+    CONDITION_LOW_LIGHT,
+    CONDITION_NOISY,
+    ConditionMonitor,
+    DegradationReport,
+)
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
 )
@@ -96,6 +105,9 @@ class PipelineConfig:
     brightness_threshold: int = 50
     zero_dce_weights: Optional[str] = None
     pending_events_db: str = "pending_events.db"
+    degradation_history_size: int = 10
+    degraded_consensus_frames: int = 3
+    degraded_confidence_scale: float = 0.65
 
     # zone
     polygon: Sequence[Tuple[float, float]] = ()
@@ -219,6 +231,8 @@ class AlertClient:
         timestamp: float,
         camera_id: str,
         thumbnail_base64: Optional[str] = None,
+        detection_condition: str = CONDITION_CLEAR,
+        detection_reliability_score: float = 1.0,
     ) -> bool:
         """POST one alert; returns True on success (2xx). Never raises."""
         payload = {
@@ -229,6 +243,8 @@ class AlertClient:
             "timestamp": timestamp,
             "camera_id": camera_id,
             "thumbnail_base64": thumbnail_base64,
+            "detection_condition": detection_condition,
+            "detection_reliability_score": round(float(detection_reliability_score), 4),
         }
         if not self._send(payload):
             self._queue(payload)
@@ -354,6 +370,17 @@ class RTSPPipeline:
         self._flagged = load_flagged_names(cfg)
         # names matched against the DB (used when alerting on all enrolled)
         self._enrolled_names: set = set()
+        self.condition_monitor = ConditionMonitor(
+            history_size=max(1, cfg.degradation_history_size)
+        )
+        self.current_degradation = DegradationReport(
+            condition=CONDITION_CLEAR,
+            severity=0.0,
+            raw_metrics={},
+        )
+        self._consensus_counts: Dict[str, int] = {}
+        self._consensus_last_frame: Dict[str, int] = {}
+        self._pending_fence_events: Dict[int, Dict[str, Any]] = {}
 
     # ------------------------------------------------------------ lifecycle
     def stop(self) -> None:
@@ -414,12 +441,13 @@ class RTSPPipeline:
                     time.sleep(0.05)
                     continue
                 self.frame_count += 1
+                degradation = self.condition_monitor.process_frame(frame)
 
                 # every Nth frame -> run the full analysis stack
                 if self.frame_count % self.cfg.process_every_n != 0:
                     continue
 
-                self._process_frame(frame)
+                self._process_frame(frame, degradation)
                 if self.cfg.max_frames and self.processed_count >= self.cfg.max_frames:
                     logger.info("reached max_frames=%s, stopping", self.cfg.max_frames)
                     break
@@ -436,9 +464,16 @@ class RTSPPipeline:
         return 0
 
 # ------------------------------------------------------------- per-frame
-    def _process_frame(self, frame: np.ndarray) -> None:
+    def _process_frame(
+        self, frame: np.ndarray, degradation: Optional[DegradationReport] = None
+    ) -> None:
         """Run all engines on one frame and alert on any trigger."""
-        if self.cfg.night_enhance:
+        self.current_degradation = degradation or self.condition_monitor.process_frame(frame)
+        condition = self.current_degradation.condition
+        degraded = condition in (CONDITION_BLURRY, CONDITION_NOISY) or (
+            self.current_degradation.severity > 0.6
+        )
+        if self.cfg.night_enhance and condition == CONDITION_LOW_LIGHT:
             try:
                 from inference.night_enhance import enhance_frame
 
@@ -451,6 +486,21 @@ class RTSPPipeline:
                     logger.debug("low-light preprocessing applied: %s", method)
             except Exception:
                 logger.exception("night enhancement failed; using original frame")
+        detector = self.engines.get("detection")
+        if detector is not None and hasattr(detector, "confidence"):
+            detector.confidence = (
+                self.cfg.confidence * self.cfg.degraded_confidence_scale
+                if degraded
+                else self.cfg.confidence
+            )
+        if degraded:
+            logger.info(
+                "degraded detection mode: condition=%s severity=%.2f confidence=%.3f consensus=%d",
+                condition,
+                self.current_degradation.severity,
+                getattr(detector, "confidence", self.cfg.confidence),
+                self.cfg.degraded_consensus_frames,
+            )
         try:
             detections = self.engines["detection"].process_frame(frame)
         except Exception as exc:
@@ -458,11 +508,32 @@ class RTSPPipeline:
             detections = []
         self.processed_count += 1
 
-        self._handle_zone(detections, frame)
+        self._handle_zone(detections, frame, consensus_required=degraded)
         if self.engines.get("face") is not None:
-            self._handle_faces(frame)
+            self._handle_faces(frame, consensus_required=degraded)
 
-    def _handle_zone(self, detections: List[Dict[str, Any]], frame: np.ndarray) -> None:
+    def _consensus_ready(self, key: str, required: bool) -> bool:
+        """Require consecutive processed frames for degraded conditions."""
+        if not required:
+            return True
+        previous = self._consensus_last_frame.get(key)
+        count = self._consensus_counts.get(key, 0) + 1 if previous == self.processed_count - 1 else 1
+        self._consensus_counts[key] = count
+        self._consensus_last_frame[key] = self.processed_count
+        return count >= max(1, self.cfg.degraded_consensus_frames)
+
+    def _alert_context(self) -> Dict[str, Any]:
+        return {
+            "detection_condition": self.current_degradation.condition,
+            "detection_reliability_score": 1.0 - self.current_degradation.severity,
+        }
+
+    def _handle_zone(
+        self,
+        detections: List[Dict[str, Any]],
+        frame: np.ndarray,
+        consensus_required: bool = False,
+    ) -> None:
         """Feed detections to ZoneMonitor and POST any intrusion alerts."""
         try:
             events = self.engines["zone"].update(detections)
@@ -470,6 +541,15 @@ class RTSPPipeline:
             logger.exception("zone update failed: %s", exc)
             return
         for ev in events:
+            self._pending_fence_events[int(ev["track_id"])] = ev
+
+        present_ids = {int(d["track_id"]) for d in detections if d.get("track_id") is not None}
+        for track_id in list(self._pending_fence_events):
+            if track_id not in present_ids:
+                continue
+            if not self._consensus_ready(f"fence:{track_id}", consensus_required):
+                continue
+            ev = self._pending_fence_events.pop(track_id)
             thumbnail = encode_jpeg_thumbnail(frame)
             ok = self.alert_client.post_alert(
                 module=MODULE_FENCE,
@@ -482,12 +562,13 @@ class RTSPPipeline:
                 timestamp=float(ev.get("timestamp", time.time())),
                 camera_id=self.cfg.camera_id,
                 thumbnail_base64=thumbnail,
+                **self._alert_context(),
             )
             if ok:
                 self.alert_count += 1
                 logger.info("fence alert posted: %s", ev)
 
-    def _handle_faces(self, frame: np.ndarray) -> None:
+    def _handle_faces(self, frame: np.ndarray, consensus_required: bool = False) -> None:
         """Match faces against the watchlist; alert on flagged identities."""
         try:
             faces = self.engines["face"].process_frame(frame)
@@ -503,6 +584,8 @@ class RTSPPipeline:
                 continue
             if not self._is_flagged(name):
                 continue
+            if not self._consensus_ready(f"face:{name}", consensus_required):
+                continue
             thumbnail = encode_jpeg_thumbnail(frame)
             ok = self.alert_client.post_alert(
                 module=MODULE_FACE,
@@ -512,6 +595,7 @@ class RTSPPipeline:
                 timestamp=time.time(),
                 camera_id=self.cfg.camera_id,
                 thumbnail_base64=thumbnail,
+                **self._alert_context(),
             )
             if ok:
                 self.alert_count += 1

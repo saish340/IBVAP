@@ -81,6 +81,8 @@ class Alert(Base):
     camera_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     #: base64-encoded frame thumbnail, if any
     thumbnail_base64: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detection_condition: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    detection_reliability_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime, default=dt.datetime.utcnow, index=True
     )

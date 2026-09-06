@@ -62,6 +62,8 @@ async def ingest_event(payload: AlertCreate, db: Session = Depends(get_db)) -> A
         timestamp=payload.timestamp if payload.timestamp is not None else time.time(),
         camera_id=payload.camera_id,
         thumbnail_base64=payload.thumbnail_base64,
+        detection_condition=payload.detection_condition,
+        detection_reliability_score=payload.detection_reliability_score,
     )
     db.add(alert)
     db.commit()
