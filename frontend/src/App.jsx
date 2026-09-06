@@ -46,9 +46,9 @@ export default function App() {
   const [image, setImage] = useState("");
   const [message, setMessage] = useState("");
   const [enrolling, setEnrolling] = useState(false);
-  const [frameNonce, setFrameNonce] = useState(Date.now());
   const [analysis, setAnalysis] = useState(null);
   const [degradation, setDegradation] = useState(null);
+  const [adaptive, setAdaptive] = useState(null);
   const selected = useMemo(() => streams.find((stream) => stream.id === selectedId), [streams, selectedId]);
 
   async function refresh() {
@@ -74,12 +74,6 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedId) return undefined;
-    const timer = setInterval(() => setFrameNonce(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [selectedId]);
-
-  useEffect(() => {
-    if (!selectedId) return undefined;
     let active = true;
     const poll = async () => {
       try {
@@ -87,6 +81,7 @@ export default function App() {
         if (active) {
           setAnalysis(result.results ?? null);
           setDegradation(result.degradation ?? null);
+          setAdaptive(result.adaptive ?? null);
         }
       } catch {
         if (active) setAnalysis(null);
@@ -147,7 +142,7 @@ export default function App() {
     reader.readAsDataURL(file);
   }
 
-  const frameUrl = selected ? `${API}/streams/${selected.id}/frame.jpg` : "";
+  const frameUrl = selected ? `${API}/streams/${selected.id}/mjpeg` : "";
   const online = health?.status === "ok";
 
   return (
@@ -163,10 +158,10 @@ export default function App() {
         <div className="space-y-5">
           <Panel title="Live camera" action={selected && <span className="text-xs text-slate-500">{selected.name} / {selected.running ? "streaming" : "stopped"}</span>}>
             <div className="aspect-video bg-black">
-              {frameUrl ? <img key={frameNonce} src={`${frameUrl}?t=${frameNonce}`} className="h-full w-full object-contain" alt="Latest camera frame" /> : <div className="flex h-full items-center justify-center text-sm text-slate-600">Register a stream to begin</div>}
+              {frameUrl ? <img key={selected.id} src={frameUrl} className="h-full w-full object-contain" alt="Live camera stream" /> : <div className="flex h-full items-center justify-center text-sm text-slate-600">Register a stream to begin</div>}
             </div>
             <div className="flex flex-wrap gap-2 border-t border-slate-800 p-4">{streams.map((stream) => <button key={stream.id} onClick={() => setSelectedId(stream.id)} className={`border px-3 py-2 text-left text-xs ${selectedId === stream.id ? "border-cyan-400 bg-cyan-400/10 text-cyan-200" : "border-slate-700 text-slate-400"}`}><span className="font-semibold">{stream.name}</span><span className="ml-2 text-slate-600">{stream.running ? "LIVE" : "OFFLINE"}</span></button>)}</div>
-            {(analysis || degradation) && <div className="grid gap-2 border-t border-slate-800 p-4 text-xs sm:grid-cols-4">{degradation && <div className="border border-emerald-900 bg-emerald-400/5 p-3"><p className="uppercase tracking-widest text-emerald-500">Condition monitor</p><p className="mt-2 text-lg text-emerald-200">{degradation.condition}</p><p className="text-slate-400">severity {(degradation.severity * 100).toFixed(0)}%</p></div>}{analysis?.tracking && <div className="border border-cyan-900 bg-cyan-400/5 p-3"><p className="uppercase tracking-widest text-cyan-500">Tracking</p><p className="mt-2 text-lg text-cyan-200">{analysis.tracking.count} active</p>{analysis.tracking.tracks?.map((track) => <p key={`${track.track_id}-${track.bbox?.join("-")}`} className="text-slate-400">{track.class} / ID {track.track_id} / {(track.confidence * 100).toFixed(0)}%</p>)}</div>}{analysis?.face_verification && <div className="border border-amber-900 bg-amber-400/5 p-3"><p className="uppercase tracking-widest text-amber-500">Faces</p><p className="mt-2 text-lg text-amber-200">{analysis.face_verification.count} detected</p>{analysis.face_verification.faces?.map((face, index) => <p key={`${face.name}-${index}`} className="text-slate-400">{face.name} / {(face.confidence * 100).toFixed(0)}%</p>)}</div>}{analysis?.anpr && <div className="border border-slate-700 bg-slate-900 p-3"><p className="uppercase tracking-widest text-slate-500">ANPR</p><p className="mt-2 text-lg text-slate-200">{analysis.anpr.count} plates</p></div>}</div>}
+            {(analysis || degradation) && <div className="grid gap-2 border-t border-slate-800 p-4 text-xs sm:grid-cols-4">{degradation && <div className="border border-emerald-900 bg-emerald-400/5 p-3"><p className="uppercase tracking-widest text-emerald-500">Condition monitor</p><p className="mt-2 text-lg text-emerald-200">{degradation.condition}</p><p className="text-slate-400">severity {(degradation.severity * 100).toFixed(0)}%</p></div>}{adaptive && <div className="border border-violet-900 bg-violet-400/5 p-3"><p className="uppercase tracking-widest text-violet-400">Adaptive layer</p><p className="mt-2 text-lg text-violet-200">{adaptive.mode.replaceAll("_", " ")}</p><p className="text-slate-400">reliability {(adaptive.reliability_score * 100).toFixed(0)}% / fence {adaptive.fence_consensus_frames} frames</p></div>}{analysis?.tracking && <div className="border border-cyan-900 bg-cyan-400/5 p-3"><p className="uppercase tracking-widest text-cyan-500">Tracking</p><p className="mt-2 text-lg text-cyan-200">{analysis.tracking.count} active</p>{analysis.tracking.tracks?.map((track) => <p key={`${track.track_id}-${track.bbox?.join("-")}`} className="text-slate-400">{track.class} / ID {track.track_id} / {(track.confidence * 100).toFixed(0)}%</p>)}</div>}{analysis?.face_verification && <div className="border border-amber-900 bg-amber-400/5 p-3"><p className="uppercase tracking-widest text-amber-500">Faces</p><p className="mt-2 text-lg text-amber-200">{analysis.face_verification.count} detected</p>{analysis.face_verification.faces?.map((face, index) => <p key={`${face.name}-${index}`} className="text-slate-400">{face.name} / {(face.confidence * 100).toFixed(0)}%</p>)}</div>}{analysis?.anpr && <div className="border border-slate-700 bg-slate-900 p-3"><p className="uppercase tracking-widest text-slate-500">ANPR</p><p className="mt-2 text-lg text-slate-200">{analysis.anpr.count} plates</p></div>}</div>}
           </Panel>
 
           <Panel title="Event history" action={<span className="text-xs text-slate-500">{history.total} recorded</span>}>

@@ -10,7 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.database import SessionLocal, WATCHLIST_DB, init_db
-from backend.models import Alert, Event
+from backend.models import Alert, Event, Stream
 
 
 def main() -> int:
@@ -19,6 +19,7 @@ def main() -> int:
     try:
         alerts = db.query(Alert).delete()
         events = db.query(Event).delete()
+        streams = db.query(Stream).delete()
         db.commit()
     finally:
         db.close()
@@ -31,7 +32,7 @@ def main() -> int:
             watchlist.commit()
 
     print(
-        f"[reset] cleared {alerts} alerts, {events} analysis events, "
+        f"[reset] cleared {alerts} alerts, {events} analysis events, {streams} streams, "
         f"and {watchlist_rows} watchlist entries"
     )
     return 0

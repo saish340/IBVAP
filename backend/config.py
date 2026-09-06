@@ -32,6 +32,18 @@ class Settings:
         self.yolo_model: str = os.getenv("YOLO_MODEL", "yolov8n.pt")
         # Run analyzers on every Nth frame (1 = every frame).
         self.process_every_n_frames: int = max(1, int(os.getenv("PROCESS_EVERY_N_FRAMES", "5")))
+        # Image-quality statistics are inexpensive, but do not need to run on
+        # every captured frame.  Keeping this independent of inference makes
+        # the adaptive decision observable without adding pressure to capture.
+        self.condition_check_interval_seconds: float = max(
+            0.1, float(os.getenv("CONDITION_CHECK_INTERVAL_SECONDS", "1.0"))
+        )
+        # Require this many consecutive in-zone tracked frames before an
+        # alert when environmental degradation makes observations less
+        # reliable. Normal conditions retain the fence's two-frame guard.
+        self.degraded_consensus_frames: int = max(
+            2, int(os.getenv("DEGRADED_CONSENSUS_FRAMES", "3"))
+        )
         # How often (per capability) the latest result is persisted as an Event.
         self.persist_interval_seconds: float = float(os.getenv("PERSIST_INTERVAL_SECONDS", "10"))
 

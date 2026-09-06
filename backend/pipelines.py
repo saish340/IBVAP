@@ -111,8 +111,13 @@ class StreamPipeline:
         for name in self.capabilities:
             try:
                 self.analyzers[name] = build_analyzer(name)
-            except ValueError:
-                logger.warning("Stream %s: unknown capability '%s' skipped", stream_id, name)
+            except Exception:
+                # An optional capability (notably DeepFace) must not prevent
+                # capture, tracking, or the live dashboard from starting.
+                logger.exception(
+                    "Stream %s: capability '%s' is unavailable and was skipped",
+                    stream_id, name,
+                )
         self._base_confidences = {
             name: float(getattr(analyzer, "confidence"))
             for name, analyzer in self.analyzers.items()
@@ -133,6 +138,9 @@ class StreamPipeline:
         self._degradation = DegradationReport(
             condition="CLEAR", severity=0.0, raw_metrics={}
         )
+        self._last_condition_check = 0.0
+        self._last_condition_log = 0.0
+        self._last_logged_condition = None
         if "tracking" in self.capabilities:
             logger.info("[FENCE] Zone monitor will initialize with the first frame size")
 
@@ -177,14 +185,41 @@ class StreamPipeline:
             "results": results,
             "frame_available": self._latest_frame is not None,
             "degradation": self._degradation.as_dict(),
+            "adaptive": {
+                "mode": (
+                    "night_enhancement"
+                    if settings.night_enhance_enabled
+                    and (
+                        self._degradation.condition == CONDITION_LOW_LIGHT
+                        or self._degradation.raw_metrics.get("brightness", float("inf"))
+                        < settings.brightness_threshold
+                    )
+                    else "standard"
+                ),
+                "reliability_score": round(max(0.0, 1.0 - self._degradation.severity), 4),
+                "fence_consensus_frames": (
+                    settings.degraded_consensus_frames
+                    if self._is_degraded() else 2
+                ),
+            },
         }
 
     def latest_frame_jpeg(self) -> Optional[bytes]:
-        """Return the most recent frame encoded for browser polling."""
-        with self._results_lock:
-            frame = None if self._latest_frame is None else self._latest_frame.copy()
-        if frame is None:
+        """Return the current capture frame with the latest AI overlay.
+
+        Capture owns the raw, continuously-updating frame buffer.  Inference
+        may be much slower, so its latest tracks are drawn over whichever raw
+        frame is current instead of publishing an old annotated image.  This
+        is deliberately separate from ``_loop`` so model execution can never
+        stall the browser video path.
+        """
+        captured = self.capture.latest()
+        if captured is None:
             return None
+        with self._results_lock:
+            payloads = {name: dict(payload) for name, payload in self._results.items()}
+            degradation = self._degradation
+        frame = self._annotate_frame(captured.data, payloads, degradation)
         ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
         return encoded.tobytes() if ok else None
 
@@ -210,7 +245,22 @@ class StreamPipeline:
                 continue
             self._last_frame_id = frame.frame_id
             self._frames_seen += 1
-            self._degradation = self._condition_monitor.process_frame(frame.data)
+            now = time.monotonic()
+            if now - self._last_condition_check >= settings.condition_check_interval_seconds:
+                self._degradation = self._condition_monitor.process_frame(frame.data)
+                self._last_condition_check = now
+                if (
+                    self._degradation.condition != self._last_logged_condition
+                    or now - self._last_condition_log >= 30.0
+                ):
+                    logger.info(
+                        "[CONDITION] %s | severity=%.2f metrics=%s",
+                        self._degradation.condition,
+                        self._degradation.severity,
+                        self._degradation.raw_metrics,
+                    )
+                    self._last_logged_condition = self._degradation.condition
+                    self._last_condition_log = now
             with self._results_lock:
                 self._latest_frame = frame.data.copy()
             if self._frames_seen == 1 or self._frames_seen % 100 == 0:
@@ -238,11 +288,13 @@ class StreamPipeline:
                     logger.info("[FENCE] Zone monitor ready for %sx%s", width, height)
                 except Exception:
                     logger.exception("[FENCE] failed to initialize zone monitor")
-            degraded = self._degradation.condition in (
-                CONDITION_BLURRY,
-                CONDITION_NOISY,
-            ) or self._degradation.severity > 0.6
-            if settings.night_enhance_enabled and self._degradation.condition == CONDITION_LOW_LIGHT:
+            degraded = self._is_degraded()
+            low_light = (
+                self._degradation.condition == CONDITION_LOW_LIGHT
+                or self._degradation.raw_metrics.get("brightness", float("inf"))
+                < settings.brightness_threshold
+            )
+            if settings.night_enhance_enabled and low_light:
                 try:
                     from inference.night_enhance import enhance_frame
 
@@ -293,11 +345,24 @@ class StreamPipeline:
                 self._latest_frame = annotated.copy()
         self._maybe_persist(name, payload)
         if name in ("tracking", "face_verification", "anpr"):
-            logger.info("[%s] Results: %s", name.upper(), payload.get("count", 0))
+            now = time.monotonic()
+            if now - self._last_observability_log >= 2.0:
+                logger.info(
+                    "[%s] frame=%s objects=%s latency=%.0fms",
+                    name.upper(), frame.frame_id, payload.get("count", 0), payload["latency_ms"],
+                )
+                self._last_observability_log = now
         return payload
 
     def _handle_module_events(self, name: str, payload: Dict[str, Any], image) -> None:
         if name == "tracking" and self._zone_monitor is not None:
+            # ZoneMonitor owns the per-track consecutive-frame state. Raising
+            # its threshold only while the measured scene is degraded gives a
+            # genuine negative/positive consensus guard without duplicating
+            # fence state or emitting fabricated alerts.
+            self._zone_monitor.inside_threshold = (
+                settings.degraded_consensus_frames if self._is_degraded() else 2
+            )
             events = self._zone_monitor.update(payload.get("tracks", []), payload.get("timestamp"))
             for event in events:
                 logger.info("[FENCE] Intrusion detected: %s", event)
@@ -340,11 +405,17 @@ class StreamPipeline:
 
             thumbnail = base64.b64encode(encoded.tobytes()).decode("ascii")
         try:
+            # Reliability is derived from the active, measured degradation
+            # report.  It is not a synthetic detector confidence: it tells
+            # alert consumers how trustworthy the visual conditions were.
+            reliability = max(0.0, min(1.0, 1.0 - self._degradation.severity))
             response = requests.post(
                 settings.alert_ingest_url,
                 json={"module": module, "severity": severity, "message": message,
                       "track_id": track_id, "timestamp": timestamp,
-                      "camera_id": str(self.stream_id), "thumbnail_base64": thumbnail},
+                      "camera_id": str(self.stream_id), "thumbnail_base64": thumbnail,
+                      "detection_condition": self._degradation.condition,
+                      "detection_reliability_score": round(reliability, 4)},
                 timeout=5,
             )
             response.raise_for_status()
@@ -352,7 +423,12 @@ class StreamPipeline:
         except requests.RequestException:
             logger.exception("[ALERT] Failed to emit alert")
 
-    def _annotate_frame(self, frame, payloads: Dict[str, Dict[str, Any]]):
+    def _is_degraded(self) -> bool:
+        return self._degradation.condition in (CONDITION_BLURRY, CONDITION_NOISY) or (
+            self._degradation.severity > 0.6
+        )
+
+    def _annotate_frame(self, frame, payloads: Dict[str, Dict[str, Any]], degradation=None):
         """Render boxes from actual module results onto the published frame."""
         scene = frame.copy()
         tracking = payloads.get("tracking", {})
@@ -371,6 +447,12 @@ class StreamPipeline:
             cv2.putText(scene, label, (x1, min(y2 + 20, scene.shape[0] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 2, cv2.LINE_AA)
         if self._zone_monitor is not None:
             self._zone_monitor.draw_polygon(scene)
+        report = degradation or self._degradation
+        color = (0, 200, 0) if report.condition == "CLEAR" else (0, 165, 255)
+        cv2.putText(
+            scene, f"{report.condition} | {report.severity:.0%}", (12, 26),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA,
+        )
         return scene
 
     def _maybe_persist(self, name: str, payload: Dict[str, Any]) -> None:

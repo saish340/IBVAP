@@ -25,7 +25,7 @@ python scripts/fake_cctv.py start "$SOURCE" --mode listen
 
 cleanup() {
   echo "[demo] stopping services"
-  kill "$PIPELINE_PID" "$BACKEND_PID" "$FRONTEND_PID" 2>/dev/null || true
+  kill "$BACKEND_PID" "$FRONTEND_PID" 2>/dev/null || true
   python scripts/fake_cctv.py stop >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
@@ -41,16 +41,12 @@ done
 
 curl -fsS -X POST http://localhost:8000/streams \
   -H 'Content-Type: application/json' \
-  -d "{\"name\":\"demo-camera\",\"source_url\":\"$SOURCE\",\"capabilities\":[]}" \
+  -d "{\"name\":\"demo-camera\",\"source_url\":\"rtsp://127.0.0.1:8554/cctv\",\"capabilities\":[\"tracking\"]}" \
   >/dev/null || echo "[demo] demo-camera already registered or unavailable"
 
-echo "[3/4] Starting inference pipeline"
-python -m ingestion.pipeline --source rtsp://127.0.0.1:8554/cctv --api-url http://localhost:8000 --no-faces > demo-pipeline.log 2>&1 &
-PIPELINE_PID=$!
-
-echo "[4/4] Starting React dashboard on http://localhost:5173"
+echo "[3/4] Starting React dashboard on http://localhost:5173"
 (cd frontend && npm run dev -- --host 0.0.0.0) > demo-frontend.log 2>&1 &
 FRONTEND_PID=$!
 
-echo "[demo] running; logs: demo-backend.log, demo-pipeline.log, demo-frontend.log"
+echo "[demo] running; logs: demo-backend.log, demo-frontend.log"
 wait "$FRONTEND_PID"

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from typing import List
 
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from inference import list_capabilities
@@ -87,6 +90,33 @@ def latest_frame(stream_id: int):
     if jpeg is None:
         raise HTTPException(status_code=404, detail="No frame available yet")
     return Response(content=jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@router.get("/{stream_id}/mjpeg", summary="Continuously stream the latest camera frame")
+def mjpeg_stream(stream_id: int):
+    """MJPEG is intentionally sourced from the capture buffer, not inference.
+
+    A slow YOLO/face pass therefore only makes overlay data older; it cannot
+    pause camera delivery to the browser.
+    """
+    pipeline = pipeline_manager.get(stream_id)
+    if pipeline is None or not pipeline.is_running:
+        raise HTTPException(status_code=404, detail="Stream is not running")
+
+    def frames():
+        while pipeline.is_running:
+            jpeg = pipeline.latest_frame_jpeg()
+            if jpeg is not None:
+                yield b"--frame\r\nContent-Type: image/jpeg\r\n"
+                yield f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii")
+                yield jpeg
+                yield b"\r\n"
+            time.sleep(1 / 12)
+
+    return StreamingResponse(
+        frames(), media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"},
+    )
 
 
 @router.delete("/{stream_id}", summary="Delete a stream and stop its pipeline")

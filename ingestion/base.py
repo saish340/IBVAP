@@ -135,7 +135,11 @@ class BaseVideoCapture(ABC):
             )
             with self._lock:
                 self._latest = frame
+            self._after_frame()
         self._release()
+
+    def _after_frame(self) -> None:
+        """Optional source-specific pacing hook after publishing a frame."""
 
     def _open(self) -> bool:
         try:

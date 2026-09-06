@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import argparse
 import time
-from collections import Counter, deque
+from collections import deque
 from dataclasses import asdict, dataclass
 from typing import Any, Deque, Dict, Optional, Union
 
@@ -29,6 +29,10 @@ import numpy as np
 # Thresholds are intentionally plain constants so they are easy to tune for a
 # camera, then can be overridden per ConditionMonitor instance.
 DEFAULT_BLUR_THRESHOLD = 80.0
+# Once blur has been confirmed, require a materially sharper image before
+# clearing it.  This hysteresis prevents boundary values (for example 79/82)
+# from causing condition churn.
+DEFAULT_BLUR_CLEAR_THRESHOLD = 90.0
 DEFAULT_LOW_LIGHT_THRESHOLD = 50.0
 DEFAULT_LOW_CONTRAST_THRESHOLD = 25.0
 DEFAULT_NOISE_THRESHOLD = 12.0
@@ -74,14 +78,25 @@ class ConditionMonitor:
         low_contrast_threshold: float = DEFAULT_LOW_CONTRAST_THRESHOLD,
         noise_threshold: float = DEFAULT_NOISE_THRESHOLD,
         history_size: int = DEFAULT_HISTORY_SIZE,
+        switch_frames: int = 3,
     ) -> None:
         if history_size < 1:
             raise ValueError("history_size must be at least 1")
+        if switch_frames < 1:
+            raise ValueError("switch_frames must be at least 1")
         self.blur_threshold = float(blur_threshold)
         self.low_light_threshold = float(low_light_threshold)
         self.low_contrast_threshold = float(low_contrast_threshold)
         self.noise_threshold = float(noise_threshold)
         self.history: Deque[str] = deque(maxlen=int(history_size))
+        # The old majority vote used the current frame to break ties.  At a
+        # threshold boundary that made the published condition alternate on
+        # successive frames.  Keep a stable state and require a short,
+        # consecutive run before transitioning to another condition.
+        self.switch_frames = int(switch_frames)
+        self._stable_condition: Optional[str] = None
+        self._pending_condition: Optional[str] = None
+        self._pending_count = 0
 
     # --------------------------------------------------------------- public API
     def process_frame(self, frame: np.ndarray) -> DegradationReport:
@@ -126,6 +141,9 @@ class ConditionMonitor:
     def reset(self) -> None:
         """Clear the rolling classification history."""
         self.history.clear()
+        self._stable_condition = None
+        self._pending_condition = None
+        self._pending_count = 0
 
     # ------------------------------------------------------------- measurements
     @staticmethod
@@ -158,7 +176,12 @@ class ConditionMonitor:
         degraded = []
         if metrics["brightness"] < self.low_light_threshold:
             degraded.append(CONDITION_LOW_LIGHT)
-        if metrics["blur_score"] < self.blur_threshold:
+        blur_limit = (
+            DEFAULT_BLUR_CLEAR_THRESHOLD
+            if self._stable_condition == CONDITION_BLURRY
+            else self.blur_threshold
+        )
+        if metrics["blur_score"] < blur_limit:
             degraded.append(CONDITION_BLURRY)
         if metrics["contrast"] < self.low_contrast_threshold:
             degraded.append(CONDITION_LOW_CONTRAST)
@@ -186,11 +209,24 @@ class ConditionMonitor:
         return 0.0
 
     def _smoothed_condition(self, current: str) -> str:
-        """Use the majority of recent labels, preferring the current label on ties."""
-        counts = Counter(self.history)
-        highest = max(counts.values())
-        winners = {condition for condition, count in counts.items() if count == highest}
-        return current if current in winners else next(iter(winners))
+        """Publish a stable condition after consecutive supporting samples."""
+        if self._stable_condition is None:
+            self._stable_condition = current
+            return current
+        if current == self._stable_condition:
+            self._pending_condition = None
+            self._pending_count = 0
+            return self._stable_condition
+        if current == self._pending_condition:
+            self._pending_count += 1
+        else:
+            self._pending_condition = current
+            self._pending_count = 1
+        if self._pending_count >= self.switch_frames:
+            self._stable_condition = current
+            self._pending_condition = None
+            self._pending_count = 0
+        return self._stable_condition
 
 
 def _open_source(source: str) -> Union[int, str]:
