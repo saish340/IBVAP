@@ -32,6 +32,14 @@ samples/
 # --- Vendored tools (MediaMTX etc., downloaded at runtime) ---
 tools/
 
+# --- Runtime run logs & stream debug captures ---
+*.log
+*.bin
+
+# --- Demo videos & debug captures dropped in repo root (downloaded at runtime) ---
+/*.mp4
+/*.jpg
+
 # --- IDE / OS ---
 .idea/
 .vscode/
