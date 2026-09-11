@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import threading
 import time
 from typing import Any, Dict, Optional, Sequence
@@ -31,6 +32,7 @@ from inference import BaseAnalyzer, get_analyzer
 from .config import settings
 from .database import SessionLocal
 from .models import Event
+from inference.face_association import FaceOverlayTracker
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +125,28 @@ class StreamPipeline:
             for name, analyzer in self.analyzers.items()
             if hasattr(analyzer, "confidence")
         }
+        # Split analyzers by cost.  The main loop runs the light modules
+        # (tracking) on EVERY processed frame so boxes track live, while the
+        # slow modules (DeepFace face verification, ANPR OCR) run on a
+        # dedicated worker thread that always works on the LATEST queued
+        # frame only - a multi-second face pass can therefore never stall
+        # tracking or the MJPEG overlay.
+        self._heavy_names = [
+            name for name in ("face_verification", "anpr") if name in self.analyzers
+        ]
+        self._light_names = [
+            name for name in self.analyzers if name not in self._heavy_names
+        ]
+        self._heavy_queue: "queue.Queue" = queue.Queue(maxsize=1)
+        self._heavy_thread: Optional[threading.Thread] = None
+        self._heavy_frame_count = 0  # frame-skip counter for face verification
+        self._persist_lock = threading.Lock()  # _maybe_persist runs on 2 threads
+        # Face -> person association + live overlay state (see
+        # inference.face_association): keeps the red face box following its
+        # person between expensive ArcFace passes.
+        self._face_overlay = FaceOverlayTracker(
+            ttl_seconds=settings.face_state_ttl_seconds
+        )
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._results_lock = threading.Lock()
@@ -156,6 +180,15 @@ class StreamPipeline:
             target=self._loop, name=f"ibvap-pipeline:{self.stream_id}", daemon=True
         )
         self._thread.start()
+        if self._heavy_names and (
+            self._heavy_thread is None or not self._heavy_thread.is_alive()
+        ):
+            self._heavy_thread = threading.Thread(
+                target=self._heavy_loop,
+                name=f"ibvap-heavy:{self.stream_id}",
+                daemon=True,
+            )
+            self._heavy_thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:
         """Stop the pipeline thread and the underlying capture."""
@@ -163,6 +196,14 @@ class StreamPipeline:
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=timeout)
         self._thread = None
+        # Wake the heavy worker and let it exit BEFORE analyzers are closed.
+        try:
+            self._heavy_queue.put_nowait(None)
+        except queue.Full:
+            pass
+        if self._heavy_thread is not None and self._heavy_thread.is_alive():
+            self._heavy_thread.join(timeout=timeout)
+        self._heavy_thread = None
         self.capture.stop(timeout=timeout)
         for analyzer in self.analyzers.values():
             close = getattr(analyzer, "close", None)
@@ -306,7 +347,8 @@ class StreamPipeline:
                         logger.info("[NIGHT] Enhancement activated: %s", method)
                 except Exception:
                     logger.exception("[NIGHT] enhancement failed; using original frame")
-            for name, analyzer in self.analyzers.items():
+            for name in self._light_names:
+                analyzer = self.analyzers.get(name)
                 if hasattr(analyzer, "confidence") and name in self._base_confidences:
                     analyzer.confidence = (
                         max(0.1, self._base_confidences[name] * 0.65)
@@ -316,21 +358,148 @@ class StreamPipeline:
             with self._results_lock:
                 self._latest_frame = working_frame.copy()
             payloads = {}
-            for name, analyzer in list(self.analyzers.items()):
-                payload = self._run_analyzer(name, analyzer, frame, working_frame)
+            # Light modules run on EVERY processed frame -> tracking boxes
+            # refresh live.  The heavy modules are offered the newest frame
+            # and run on their own thread (see _heavy_loop).
+            for name in self._light_names:
+                analyzer = self.analyzers.get(name)
+                if analyzer is None:
+                    continue
+                # When tracking is stored, re-anchor and publish the face
+                # overlay in the SAME critical section (atomic pair).
+                on_stored = self._publish_face_overlay if name == "tracking" else None
+                payload = self._run_analyzer(
+                    name, analyzer, frame, working_frame, on_stored=on_stored
+                )
                 payloads[name] = payload
                 self._handle_module_events(name, payload, working_frame)
+            self._offer_heavy(frame, working_frame)
             with self._results_lock:
                 self._latest_frame = self._annotate_frame(working_frame, payloads)
         logger.info("Pipeline stopped for stream %s", self.stream_id)
 
-    def _run_analyzer(self, name: str, analyzer: BaseAnalyzer, frame, image=None) -> Dict[str, Any]:
+    def _publish_face_overlay(self) -> None:
+        """Re-anchor verified faces to the just-stored tracking result.
+
+        Caller MUST already hold ``self._results_lock``: this runs inside
+        the ``on_stored`` hook of ``_run_analyzer``, in the same critical
+        section that stores the tracking/face payload.  The dashboard's
+        atomic snapshot therefore always contains a consistent pair - the
+        person box and its re-anchored face box come from the exact same
+        sweep, and the red face box can never visibly lag its person.
+        """
+        face_payload = self._results.get("face_verification")
+        if face_payload is None:
+            return  # no face verification result yet - nothing to overlay
+        tracks = (self._results.get("tracking") or {}).get("tracks", [])
+        faces = self._face_overlay.live_faces(tracks, time.time())
+        face_payload["faces"] = faces
+        face_payload["count"] = len(faces)
+
+    # ------------------------------------------------------- heavy worker
+    def _offer_heavy(self, frame, working_frame) -> None:
+        """Offer the newest frame to the heavy worker, dropping stale ones.
+
+        The queue holds a single slot: if the worker is still busy with the
+        previous frame, that older frame is REPLACED so the worker always
+        resumes analysis on the freshest image - the same latest-frame policy
+        the capture buffer applies to ``cap.read()``.  This is what keeps the
+        tracking overlay live while a multi-second face pass is in flight.
+        """
+        if not self._heavy_names:
+            return
+        item = (frame, working_frame)
+        try:
+            self._heavy_queue.put_nowait(item)
+        except queue.Full:
+            try:
+                self._heavy_queue.get_nowait()
+                self._heavy_queue.put_nowait(item)
+            except (queue.Empty, queue.Full):
+                pass
+
+    def _heavy_loop(self) -> None:
+        """Run the slow modules (face verification / ANPR) off the main loop.
+
+        Consumes only the LATEST queued frame, so tracking on the main thread
+        keeps refreshing at full speed while DeepFace takes its time.  Face
+        verification - the heaviest module - additionally runs only on every
+        ``settings.face_every_n_frames``-th frame offered to this worker.
+        """
+        logger.info(
+            "[stream %s] heavy worker started (%s), faces every %d frame(s)",
+            self.stream_id, ", ".join(self._heavy_names),
+            settings.face_every_n_frames,
+        )
+        while not self._stop_event.is_set():
+            try:
+                item = self._heavy_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if item is None:
+                break
+            frame, working_frame = item
+            self._heavy_frame_count += 1
+            degraded = self._is_degraded()
+            for name in self._heavy_names:
+                if self._stop_event.is_set():
+                    break
+                analyzer = self.analyzers.get(name)
+                if analyzer is None:
+                    continue
+                # frame-skip: face verification runs every Nth offered frame
+                if name == "face_verification" and (
+                    self._heavy_frame_count % max(1, settings.face_every_n_frames)
+                ):
+                    continue
+                if hasattr(analyzer, "confidence") and name in self._base_confidences:
+                    analyzer.confidence = (
+                        max(0.1, self._base_confidences[name] * 0.65)
+                        if degraded
+                        else self._base_confidences[name]
+                    )
+                if name == "face_verification":
+                    # Associate verified faces with the CURRENT ByteTrack
+                    # persons and anchor each face inside its person box.
+                    # Runs BEFORE storage (on_result), so the published
+                    # payload never shows un-associated faces.
+                    def associate(result: Dict[str, Any]) -> None:
+                        with self._results_lock:
+                            tracks = (self._results.get("tracking") or {}).get("tracks", [])
+                        self._face_overlay.update_verified(
+                            result.get("faces", []), tracks
+                        )
+
+                    on_result = associate
+                else:
+                    on_result = None
+                # After the face payload is stored, re-anchor and publish the
+                # live overlay INSIDE the same storage critical section, so
+                # consumers (dashboard snapshot) never catch the raw verified
+                # bbox before it is re-projected onto the current person box.
+                on_stored = (
+                    self._publish_face_overlay if name == "face_verification" else None
+                )
+                payload = self._run_analyzer(
+                    name, analyzer, frame, working_frame,
+                    on_result=on_result, on_stored=on_stored,
+                )
+                self._handle_module_events(name, payload, working_frame)
+        logger.info("[stream %s] heavy worker stopped", self.stream_id)
+
+    def _run_analyzer(self, name: str, analyzer: BaseAnalyzer, frame, image=None,
+                      on_result=None, on_stored=None) -> Dict[str, Any]:
         started = time.perf_counter()
         try:
             result = analyzer.process(image if image is not None else frame.data)
         except Exception as exc:  # one failing capability must not kill the pipeline
             logger.exception("Analyzer '%s' failed on stream %s", name, self.stream_id)
             result = {"capability": name, "error": str(exc)}
+        if on_result is not None:
+            # Pre-storage hook (e.g. face -> person association) - runs BEFORE
+            # the result becomes visible in _results, so consumers never see
+            # an un-associated face payload.
+            on_result(result)
         payload = {
             **result,
             "capability": name,
@@ -343,6 +512,11 @@ class StreamPipeline:
             annotated = getattr(analyzer, "annotated_frame", None)
             if annotated is not None:
                 self._latest_frame = annotated.copy()
+            if on_stored is not None:
+                # Optional atomic follow-up (e.g. re-anchoring the face
+                # overlay to this exact tracking result) - runs inside the
+                # same lock, so consumers never see a half-updated pair.
+                on_stored()
         self._maybe_persist(name, payload)
         if name in ("tracking", "face_verification", "anpr"):
             now = time.monotonic()
@@ -461,19 +635,21 @@ class StreamPipeline:
         if now < self._next_persist_at.get(name, 0.0):
             return
         self._next_persist_at[name] = now + settings.persist_interval_seconds
-        try:
-            db = SessionLocal()
+        # Runs on both the main loop and the heavy worker -> serialize.
+        with self._persist_lock:
             try:
-                db.add(
-                    Event(
-                        stream_id=self.stream_id,
-                        capability=name,
-                        payload=json.loads(json.dumps(payload, default=str)),
+                db = SessionLocal()
+                try:
+                    db.add(
+                        Event(
+                            stream_id=self.stream_id,
+                            capability=name,
+                            payload=json.loads(json.dumps(payload, default=str)),
+                        )
                     )
-                )
-                db.commit()
-            finally:
-                db.close()
-        except Exception:
-            logger.exception("Failed to persist event (stream %s, %s)", self.stream_id, name)
+                    db.commit()
+                finally:
+                    db.close()
+            except Exception:
+                logger.exception("Failed to persist event (stream %s, %s)", self.stream_id, name)
 

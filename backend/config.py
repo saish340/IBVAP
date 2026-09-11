@@ -32,6 +32,19 @@ class Settings:
         self.yolo_model: str = os.getenv("YOLO_MODEL", "yolov8n.pt")
         # Run analyzers on every Nth frame (1 = every frame).
         self.process_every_n_frames: int = max(1, int(os.getenv("PROCESS_EVERY_N_FRAMES", "5")))
+        # Face verification is the heaviest module (DeepFace detector +
+        # ArcFace).  On the stream pipeline it runs on a dedicated worker
+        # thread, and only on every Nth frame offered to that worker
+        # (1 = every offered frame), keeping tracking refresh-rate high.
+        self.face_every_n_frames: int = max(
+            1, int(os.getenv("FACE_EVERY_N_FRAMES", "5"))
+        )
+        # How long a verified face may keep being re-drawn from its person
+        # track (face -> person association) before it is expired.  Must
+        # exceed the real face-verification cadence.
+        self.face_state_ttl_seconds: float = max(
+            1.0, float(os.getenv("FACE_STATE_TTL_SECONDS", "8"))
+        )
         # Image-quality statistics are inexpensive, but do not need to run on
         # every captured frame.  Keeping this independent of inference makes
         # the adaptive decision observable without adding pressure to capture.

@@ -2,8 +2,12 @@
 
 Ties together the whole IBVAP stack on one continuous loop:
 
-1. connect to an RTSP stream (retrying while the server / feed comes up);
-2. for every **3rd** frame (``PROCESS_EVERY_N=3``) run, in order:
+1. connect to an RTSP stream (retrying while the server / feed comes up) and
+   hand the camera to :class:`ingestion.frame_buffer.LatestFrameBuffer`, which
+   reads ``cap.read()`` on a background thread and keeps only the newest
+   frame - capture never waits on inference and never builds a backlog;
+2. the main loop pulls the freshest frame via ``LatestFrameBuffer.get_latest()``
+   and, for every **3rd** frame (``PROCESS_EVERY_N=3``) runs, in order:
 
    - :class:`inference.detection.DetectionEngine` (Prompt 3)
         -> tracked detections ``{class, confidence, bbox, track_id}``
@@ -12,12 +16,18 @@ Ties together the whole IBVAP stack on one continuous loop:
    - :class:`inference.face_verification.FaceVerificationEngine` (Prompt 4)
         -> face matches ``{bbox, name, confidence, face_confidence}``
 
+   Face verification is the heaviest module, so a frame-skip counter runs it
+   only on every ``FACE_EVERY_N=5``-th *processed* frame (``--face-every``);
+   detection / zone tracking keep the every-Nth-frame cadence;
 3. any intrusion event **or** a face matched against a **flagged** watchlist
    entry is POSTed to the backend's ``/events/ingest`` as an alert, with a
    JPEG thumbnail base64-encoded, so it arrives live on ``/ws/alerts``;
 4. the loop is resilient: a dropped/None frame is skipped, a single engine or
    POST failure is logged and does not crash the pipeline, and the camera
-   connection is retried automatically.
+   connection is retried automatically;
+5. with ``--preview`` a window is fed straight from the capture thread, so it
+   shows the latest raw frame (with the freshest overlay) at camera frame
+   rate even while inference is busy on an older frame.
 
 Run it:
 
@@ -48,6 +58,7 @@ import cv2
 import numpy as np
 import requests  # part of the FastAPI/uvicorn stack
 
+from ingestion.frame_buffer import LatestFrameBuffer
 from inference.degradation_monitor import (
     CONDITION_BLURRY,
     CONDITION_CLEAR,
@@ -56,6 +67,7 @@ from inference.degradation_monitor import (
     ConditionMonitor,
     DegradationReport,
 )
+from inference.face_association import FaceOverlayTracker
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -64,6 +76,10 @@ logger = logging.getLogger(__name__)
 
 #: how often (every Nth frame) the inference engines run on the loop
 PROCESS_EVERY_N = 3
+#: face verification is the heaviest engine - a frame-skip counter runs it
+#: only on every Nth *processed* frame; detection / tracking keep the
+#: PROCESS_EVERY_N cadence above
+FACE_EVERY_N = 5
 #: severity for intrusion (virtual fence) alerts
 FENCE_SEVERITY = "critical"
 #: severity for a flagged-watchlist face match
@@ -89,6 +105,8 @@ class PipelineConfig:
     api_url: str = "http://localhost:8000"
     camera_id: str = "cam-01"
     process_every_n: int = PROCESS_EVERY_N
+    face_every_n: int = FACE_EVERY_N
+    preview: bool = False  # live window fed by the capture thread
 
     # engines
     yolo_model: str = "yolov8n.pt"
@@ -366,6 +384,17 @@ class RTSPPipeline:
         self.processed_count = 0
         self.alert_count = 0
         self._stop = False
+        self.frame_buffer: Optional[LatestFrameBuffer] = None
+        self._last_frame_id = 0  # newest frame_id consumed from the buffer
+        self._face_frame_skip = 0  # frame-skip counter for face verification
+        self._face_run_count = 0  # ordinal of each actual face-verification run
+        self._last_no_frame_log = 0.0
+        # freshest results, kept for the preview/display overlay path
+        self._last_detections: List[Dict[str, Any]] = []
+        self._last_faces: List[Dict[str, Any]] = []
+        # face -> person association + live overlay state (see
+        # inference.face_association)
+        self._face_overlay = FaceOverlayTracker()
 
         self._flagged = load_flagged_names(cfg)
         # names matched against the DB (used when alerting on all enrolled)
@@ -427,19 +456,38 @@ class RTSPPipeline:
             )
             return 1
         self.cap = cap
+        # Capture now runs on its own thread and only the newest frame is
+        # kept, so the camera can never stall behind a slow inference pass.
+        self.frame_buffer = LatestFrameBuffer(
+            cap,
+            name=f"ibvap-frames:{self.cfg.camera_id}",
+            on_frame=self._show_preview if self.cfg.preview else None,
+        )
+        self.frame_buffer.start()
         try:
             self._ensure_engines()
             logger.info(
-                "pipeline ready on %r (engines: %s)",
+                "pipeline ready on %r (engines: %s, capture: latest-frame buffer, "
+                "faces: every %d processed frame(s))",
                 self.cfg.source, ", ".join(sorted(self.engines)),
+                max(1, self.cfg.face_every_n),
             )
             while not self._stop:
-                ok, frame = cap.read()
+                # Newest frame available right now: get_latest() returns
+                # instantly and never blocks on the camera (the reader thread
+                # owns all cap.read() I/O).
+                frame_id = self.frame_buffer.frame_id
+                ok, frame = self.frame_buffer.get_latest()
                 if not ok or frame is None:
-                    # dropped frame / transient failure - skip, do not crash
-                    logger.warning("frame read failed (skipping)")
-                    time.sleep(0.05)
+                    self._warn_frame_starvation()
+                    time.sleep(0.02)
                     continue
+                if frame_id == self._last_frame_id:
+                    # The reader thread has not delivered a newer frame yet;
+                    # hold at the camera's cadence instead of reprocessing.
+                    time.sleep(0.005)
+                    continue
+                self._last_frame_id = frame_id
                 self.frame_count += 1
                 degradation = self.condition_monitor.process_frame(frame)
 
@@ -457,11 +505,68 @@ class RTSPPipeline:
         except KeyboardInterrupt:
             logger.info("interrupted, stopping pipeline")
         finally:
+            if self.frame_buffer is not None:
+                self.frame_buffer.stop()
             cap.release()
+            if self.cfg.preview:
+                cv2.destroyAllWindows()
             self.alert_client.close()
         logger.info("pipeline stopped: %d frames, %d processed, %d alerts",
                     self.frame_count, self.processed_count, self.alert_count)
         return 0
+
+    def _warn_frame_starvation(self) -> None:
+        """Throttled warning while the capture has not produced a frame yet."""
+        now = time.monotonic()
+        if now - self._last_no_frame_log >= 5.0:
+            self._last_no_frame_log = now
+            logger.warning(
+                "no frame available from %r yet - capture keeps retrying ...",
+                self.cfg.source,
+            )
+
+    # --------------------------------------------------------------- display
+    def latest_frame(self) -> Optional[np.ndarray]:
+        """Newest raw frame from the capture buffer (for display/streaming).
+
+        Read in O(1) from the buffer's single slot, so a consumer can grab it
+        even while ``_process_frame`` is mid-inference on an older frame.
+        """
+        if self.frame_buffer is None:
+            return None
+        return self.frame_buffer.get_latest()[1]
+
+    def _show_preview(self, frame: np.ndarray) -> None:
+        """Draw the freshest overlay on the newest raw frame and display it.
+
+        Called from the capture reader thread, so the preview keeps updating
+        at the camera's frame rate even while inference is busy on an older
+        frame in the main loop.  Press 'q' (or Esc) in the window to stop.
+        """
+        zone = self.engines.get("zone")
+        if zone is not None and hasattr(zone, "draw_polygon"):
+            scene = frame.copy()
+            zone.draw_polygon(scene)
+        else:
+            scene = frame
+        # Draw the LATEST known results over the LATEST raw frame; while
+        # inference is running the overlay simply stays one analysis behind
+        # instead of the whole picture going stale.
+        for det in self._last_detections:
+            x1, y1, x2, y2 = (int(v) for v in det.get("bbox", (0, 0, 0, 0)))
+            cv2.rectangle(scene, (x1, y1), (x2, y2), (0, 220, 0), 2)
+            cv2.putText(
+                scene, f"{det.get('class', 'obj')} {det.get('confidence', 0.0):.2f}",
+                (x1, max(y1 - 8, 16)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                (0, 220, 0), 1, cv2.LINE_AA,
+            )
+        for face in self._face_overlay.live_faces(self._last_detections):
+            x1, y1, x2, y2 = (int(v) for v in face.get("bbox", (0, 0, 0, 0)))
+            color = (0, 200, 0) if face.get("name", "UNKNOWN") != "UNKNOWN" else (0, 0, 220)
+            cv2.rectangle(scene, (x1, y1), (x2, y2), color, 2)
+        cv2.imshow(f"IBVAP preview - {self.cfg.camera_id}", scene)
+        if (cv2.waitKey(1) & 0xFF) in (ord("q"), 27):
+            self._stop = True
 
 # ------------------------------------------------------------- per-frame
     def _process_frame(
@@ -507,19 +612,42 @@ class RTSPPipeline:
             logger.exception("detection failed: %s", exc)
             detections = []
         self.processed_count += 1
+        self._last_detections = detections
 
         self._handle_zone(detections, frame, consensus_required=degraded)
-        if self.engines.get("face") is not None:
-            self._handle_faces(frame, consensus_required=degraded)
 
-    def _consensus_ready(self, key: str, required: bool) -> bool:
-        """Require consecutive processed frames for degraded conditions."""
+        # Face verification is the heaviest module: a frame-skip counter runs
+        # it only every face_every_n-th *processed* frame. Detection and zone
+        # tracking above still run on every processed frame.
+        self._face_frame_skip += 1
+        face_engine = self.engines.get("face")
+        if face_engine is not None:
+            if self._face_frame_skip % max(1, self.cfg.face_every_n) == 0:
+                self._handle_faces(frame, consensus_required=degraded)
+            else:
+                logger.debug(
+                    "frame-skip: face verification deferred (%d/%d)",
+                    self._face_frame_skip % max(1, self.cfg.face_every_n),
+                    max(1, self.cfg.face_every_n),
+                )
+
+    def _consensus_ready(
+        self, key: str, required: bool, step: Optional[int] = None
+    ) -> bool:
+        """Require consecutive module runs for degraded conditions.
+
+        ``step`` is the run counter the streak should be consistent across
+        and defaults to the global processed-frame count. Modules that skip
+        frames (face verification) pass their own counter so the gap between
+        their runs is not misread as a broken consensus streak.
+        """
         if not required:
             return True
+        current = self.processed_count if step is None else step
         previous = self._consensus_last_frame.get(key)
-        count = self._consensus_counts.get(key, 0) + 1 if previous == self.processed_count - 1 else 1
+        count = self._consensus_counts.get(key, 0) + 1 if previous == current - 1 else 1
         self._consensus_counts[key] = count
-        self._consensus_last_frame[key] = self.processed_count
+        self._consensus_last_frame[key] = current
         return count >= max(1, self.cfg.degraded_consensus_frames)
 
     def _alert_context(self) -> Dict[str, Any]:
@@ -570,11 +698,18 @@ class RTSPPipeline:
 
     def _handle_faces(self, frame: np.ndarray, consensus_required: bool = False) -> None:
         """Match faces against the watchlist; alert on flagged identities."""
+        # Per-run ordinal: consecutive runs increment it by exactly 1, so the
+        # degraded consensus keeps working even though runs are 5 frames apart.
+        self._face_run_count += 1
         try:
             faces = self.engines["face"].process_frame(frame)
         except Exception as exc:
             logger.exception("face verification failed: %s", exc)
             return
+        # Associate verified faces with the current tracked persons (adds
+        # track_id per face) and anchor them for live overlay updates.
+        self._face_overlay.update_verified(faces, self._last_detections)
+        self._last_faces = faces
         if not faces:
             return
 
@@ -584,7 +719,9 @@ class RTSPPipeline:
                 continue
             if not self._is_flagged(name):
                 continue
-            if not self._consensus_ready(f"face:{name}", consensus_required):
+            if not self._consensus_ready(
+                f"face:{name}", consensus_required, step=self._face_run_count
+            ):
                 continue
             thumbnail = encode_jpeg_thumbnail(frame)
             ok = self.alert_client.post_alert(
@@ -638,6 +775,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # faces
     parser.add_argument("--no-faces", action="store_true",
                         help="disable the face engine (no deepface/TF needed)")
+    parser.add_argument("--face-every", type=int, default=FACE_EVERY_N,
+                        help="run face verification only every Nth processed "
+                             "frame (default: %(default)s; 1 = every frame)")
     parser.add_argument("--watchlist-db", default="watchlist.db",
                         help="watchlist SQLite file (default: watchlist.db)")
     parser.add_argument("--flag-names", nargs="*", default=None,
@@ -656,6 +796,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-alerts", type=int, default=None,
                         help="stop after this many alerts (0/None = forever)")
     parser.add_argument("--reconnect-delay", type=float, default=2.0)
+    parser.add_argument("--preview", action="store_true",
+                        help="show a live window fed by the capture thread - "
+                             "it keeps updating at camera frame rate even "
+                             "while inference is busy")
     return parser
 
 
@@ -668,6 +812,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         api_url=args.api_url,
         camera_id=args.camera_id,
         process_every_n=max(1, args.process_every),
+        face_every_n=max(1, args.face_every),
+        preview=args.preview,
         yolo_model=args.yolo_model,
         confidence=args.confidence,
         enable_faces=not args.no_faces,

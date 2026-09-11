@@ -9,6 +9,7 @@ inference layer:
 """
 
 from .base import BaseVideoCapture, Frame
+from .frame_buffer import LatestFrameBuffer
 from .rtsp_capture import RTSPCapture
 from .stream_manager import StreamManager
 from .video_file import VideoFileCapture
@@ -16,6 +17,7 @@ from .video_file import VideoFileCapture
 __all__ = [
     "BaseVideoCapture",
     "Frame",
+    "LatestFrameBuffer",
     "RTSPCapture",
     "StreamManager",
     "VideoFileCapture",
