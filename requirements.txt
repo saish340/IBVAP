@@ -2,10 +2,12 @@
 #
 # Heads-up on heavyweight dependencies:
 #   * deepface pulls in TensorFlow (~500 MB)
-#   * paddleocr needs a paddle runtime, which it does NOT install itself:
-#     uncomment `paddlepaddle` below if `import paddleocr` fails.
-# Model weights (YOLO .pt, DeepFace, MediaPipe, PaddleOCR) are downloaded
-# automatically on first use and cached in the user's home directory.
+#   * paddle is INCOMPATIBLE with this Python/paddleocr combo (PIR "strides"
+#     crash) - OCR runs on RapidOCR/ONNX instead; paddleocr is kept only as
+#     an optional legacy fallback and needs no paddle runtime for that path.
+# Model weights (YOLO .pt, DeepFace, MediaPipe, RapidOCR ONNX) are
+# downloaded automatically on first use and cached in the user's home
+# directory.
 
 # --- AI / vision capabilities -------------------------------------------
 ultralytics          # YOLO object detection + tracking
@@ -15,8 +17,11 @@ opencv-python        # video capture (RTSP via FFmpeg) and image ops
 deepface             # face detection / recognition (RetinaFace + ArcFace)
 # NOTE: deepface needs TensorFlow, which has no Python 3.14 wheels yet - use
 # Python 3.11 (as in the Docker image) or <= 3.13 for face verification.
-paddleocr            # text recognition (OCR)
-paddlepaddle         # Paddle runtime required by PaddleOCR
+paddleocr            # legacy OCR fallback (optional; RapidOCR/ONNX is default)
+rapidocr_onnxruntime # text recognition (OCR) - default backend, no paddle needed
+onnxruntime          # runtime required by RapidOCR
+# NOTE: do NOT add paddlepaddle here - paddle 2.6/3.x crashes PaddleOCR on
+# this Python (PIR "strides" ValueError); paddleocr is import-only fallback.
 mediapipe            # human pose estimation
 shapely              # virtual-fence polygon geometry
 requests              # resilient pipeline HTTP client

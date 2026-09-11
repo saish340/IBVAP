@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -26,16 +27,31 @@ class ObjectTracker(BaseAnalyzer):
         tracker: str = "bytetrack.yaml",
         confidence: float = 0.4,
         device: Optional[str] = None,
+        imgsz: int = 640,
     ) -> None:
         super().__init__(device=device)
         self.model_name = model_name
         self.tracker = tracker
         self.confidence = confidence
+        # Lower image size = faster CPU inference.  640 is the YOLOv8 default
+        # sweet spot for person/vehicle detection; do not drop below ~480.
+        self.imgsz = imgsz
 
     def _load_model(self) -> Any:
         from ultralytics import YOLO  # heavy import kept lazy
 
-        return YOLO(self.model_name)
+        model = YOLO(self.model_name)
+        # PyTorch defaults to one thread per core (16 on this i7-13700HX).
+        # For a small model like yolov8n, 16 threads oversubscribe the CPU and
+        # collide with the ANPR ONNX thread pool, inflating latency 5-15x.
+        # A modest cap keeps single-inference latency lowest for this app.
+        try:
+            import torch
+
+            torch.set_num_threads(int(os.getenv("YOLO_THREADS", "4")))
+        except Exception:
+            pass
+        return model
 
     def analyze(self, frame: np.ndarray) -> Dict[str, Any]:
         self.ensure_loaded()
@@ -44,6 +60,7 @@ class ObjectTracker(BaseAnalyzer):
             persist=True,
             tracker=self.tracker,
             conf=self.confidence,
+            imgsz=self.imgsz,
             classes=[0, 2, 3, 5, 7],
             device=self.device,
             verbose=False,

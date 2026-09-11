@@ -8,8 +8,7 @@ inference layer:
 * :class:`StreamManager`    - registry for running many captures at once
 """
 
-from .base import BaseVideoCapture, Frame
-from .frame_buffer import LatestFrameBuffer
+from .base import BaseVideoCapture, Frame, LatestFrameBuffer
 from .rtsp_capture import RTSPCapture
 from .stream_manager import StreamManager
 from .video_file import VideoFileCapture

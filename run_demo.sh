@@ -39,9 +39,13 @@ for _ in {1..30}; do
   sleep 1
 done
 
+# Face verification runs by default in the demo.
+# NOTE: deepface + tensorflow must be installed first (they only support
+# Python 3.10-3.13; on Python 3.14+ remove "face_verification" from the
+# capabilities list below).
 curl -fsS -X POST http://localhost:8000/streams \
   -H 'Content-Type: application/json' \
-  -d "{\"name\":\"demo-camera\",\"source_url\":\"rtsp://127.0.0.1:8554/cctv\",\"capabilities\":[\"tracking\"]}" \
+  -d "{\"name\":\"demo-camera\",\"source_url\":\"rtsp://127.0.0.1:8554/cctv\",\"capabilities\":[\"tracking\",\"face_verification\"]}" \
   >/dev/null || echo "[demo] demo-camera already registered or unavailable"
 
 echo "[3/4] Starting React dashboard on http://localhost:5173"

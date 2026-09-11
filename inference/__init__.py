@@ -20,10 +20,11 @@ Name                  Module / class
 from typing import Any
 
 from .base import BaseAnalyzer
+from .anpr import ANPRAnalyzer
 from .face_recognition import FaceRecognizer
 from .object_detection import ObjectDetector
 from .ocr import OCRReader
-from .pose_estimation import PoseEstimator
+from .pose_estimation import PoseEstimator, SuspiciousActivityDetector
 from .tracking import ObjectTracker
 
 #: Maps capability names to their analyzer classes.
@@ -33,16 +34,20 @@ ANALYZERS: dict[str, type[BaseAnalyzer]] = {
     OCRReader.name: OCRReader,
     PoseEstimator.name: PoseEstimator,
     ObjectTracker.name: ObjectTracker,
+    ANPRAnalyzer.name: ANPRAnalyzer,
+    SuspiciousActivityDetector.name: SuspiciousActivityDetector,
 }
 
 __all__ = [
     "ANALYZERS",
+    "ANPRAnalyzer",
     "BaseAnalyzer",
     "FaceRecognizer",
     "ObjectDetector",
     "OCRReader",
     "ObjectTracker",
     "PoseEstimator",
+    "SuspiciousActivityDetector",
     "get_analyzer",
     "list_capabilities",
 ]

@@ -58,7 +58,7 @@ import cv2
 import numpy as np
 import requests  # part of the FastAPI/uvicorn stack
 
-from ingestion.frame_buffer import LatestFrameBuffer
+from ingestion.base import LatestFrameBuffer
 from inference.degradation_monitor import (
     CONDITION_BLURRY,
     CONDITION_CLEAR,
@@ -552,18 +552,40 @@ class RTSPPipeline:
         # Draw the LATEST known results over the LATEST raw frame; while
         # inference is running the overlay simply stays one analysis behind
         # instead of the whole picture going stale.
+        h, w = frame.shape[:2]
         for det in self._last_detections:
-            x1, y1, x2, y2 = (int(v) for v in det.get("bbox", (0, 0, 0, 0)))
-            cv2.rectangle(scene, (x1, y1), (x2, y2), (0, 220, 0), 2)
-            cv2.putText(
-                scene, f"{det.get('class', 'obj')} {det.get('confidence', 0.0):.2f}",
-                (x1, max(y1 - 8, 16)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                (0, 220, 0), 1, cv2.LINE_AA,
-            )
+            try:
+                bbox = det.get("bbox", (0, 0, 0, 0))
+                x1, y1, x2, y2 = (float(v) for v in bbox)
+                if any(v != v or v == float("inf") or v == float("-inf") for v in (x1, y1, x2, y2)):
+                    continue
+                x1, y1, x2, y2 = (
+                    max(0, min(w - 1, int(x1))), max(0, min(h - 1, int(y1))),
+                    max(0, min(w - 1, int(x2))), max(0, min(h - 1, int(y2))),
+                )
+                cv2.rectangle(scene, (x1, y1), (x2, y2), (0, 220, 0), 2)
+                label = f"{det.get('class', 'obj')} {det.get('confidence', 0.0):.2f}"
+                if det.get("track_id") is not None:
+                    label += f" #{det['track_id']}"
+                cv2.putText(
+                    scene, label,
+                    (x1, max(y1 - 8, 16)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (0, 220, 0), 1, cv2.LINE_AA,
+                )
+                # Visible centroid tracking point.
+                cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                cv2.circle(scene, (cx, cy), 5, (0, 220, 0), -1)
+                cv2.circle(scene, (cx, cy), 2, (255, 255, 255), -1)
+            except (TypeError, ValueError):
+                continue
         for face in self._face_overlay.live_faces(self._last_detections):
-            x1, y1, x2, y2 = (int(v) for v in face.get("bbox", (0, 0, 0, 0)))
-            color = (0, 200, 0) if face.get("name", "UNKNOWN") != "UNKNOWN" else (0, 0, 220)
-            cv2.rectangle(scene, (x1, y1), (x2, y2), color, 2)
+            try:
+                bbox = face.get("bbox", (0, 0, 0, 0))
+                x1, y1, x2, y2 = (int(v) for v in bbox)
+                color = (0, 200, 0) if face.get("name", "UNKNOWN") != "UNKNOWN" else (0, 0, 220)
+                cv2.rectangle(scene, (x1, y1), (x2, y2), color, 2)
+            except (TypeError, ValueError):
+                continue
         cv2.imshow(f"IBVAP preview - {self.cfg.camera_id}", scene)
         if (cv2.waitKey(1) & 0xFF) in (ord("q"), 27):
             self._stop = True

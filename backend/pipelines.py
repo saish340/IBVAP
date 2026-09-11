@@ -67,7 +67,7 @@ class ANPRAnalyzer:
     def __init__(self) -> None:
         from inference.anpr import ANPREngine
 
-        self.engine = ANPREngine()
+        self.engine = ANPREngine(ocr_threads=settings.anpr_ocr_threads)
         self.annotated_frame = None
 
     def process(self, frame):
@@ -83,11 +83,65 @@ def build_analyzer(name: str) -> BaseAnalyzer:
     kwargs: Dict[str, Any] = {}
     if name in ("detection", "tracking"):
         kwargs["model_name"] = settings.yolo_model
+    if name == "tracking":
+        kwargs["imgsz"] = settings.yolo_imgsz
     if name == "face_verification":
         return FaceVerificationAnalyzer()  # type: ignore[return-value]
     if name == "anpr":
         return ANPRAnalyzer()  # type: ignore[return-value]
+    if name == "suspicious_activity":
+        return get_analyzer(
+            name,
+            loiter_seconds=settings.suspicious_loiter_seconds,
+            run_speed_threshold=settings.suspicious_run_speed_px_s,
+            alert_cooldown=settings.suspicious_alert_cooldown_seconds,
+            crouch_enabled=settings.suspicious_crouch_enabled,
+        )
     return get_analyzer(name, **kwargs)
+
+
+def _clamp_bbox(bbox, shape: Tuple[int, int, int]) -> Optional[Tuple[int, int, int, int]]:
+    """Normalise a box to integer, finite, in-frame coordinates.
+
+    YOLO can occasionally emit ``None``/NaN boxes (e.g. while a tracker is
+    first associating or re-identifying after an occlusion).  A single bad
+    box must never tear down the MJPEG overlay or the pipeline loop, so this
+    returns ``None`` for anything unusable instead of raising.
+    """
+    try:
+        if bbox is None or len(bbox) != 4:
+            return None
+        x1, y1, x2, y2 = (float(v) for v in bbox)
+    except (TypeError, ValueError):
+        return None
+    if not all(v == v and v != float("inf") and v != float("-inf") for v in (x1, y1, x2, y2)):
+        return None
+    h, w = shape[:2]
+    if x2 - x1 < 1.0 or y2 - y1 < 1.0:
+        return None
+    return (
+        max(0, min(w - 1, int(x1))),
+        max(0, min(h - 1, int(y1))),
+        max(0, min(w - 1, int(x2))),
+        max(0, min(h - 1, int(y2))),
+    )
+
+
+def _draw_tracking_point(scene, x1: int, y1: int, x2: int, y2: int,
+                         color, label: str) -> None:
+    """Draw a clearly visible centroid marker + ID onto the frame.
+
+    Gives every tracked object a distinct, continuously-following "point",
+    independent of the box outline, using the same colour as the box so the
+    track stays recognisable at a glance.
+    """
+    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+    cv2.circle(scene, (cx, cy), 6, color, -1)          # outer marker
+    cv2.circle(scene, (cx, cy), 2, (255, 255, 255), -1)  # white pip
+    cv2.circle(scene, (cx, cy), 6, (255, 255, 255), 1)   # crisp rim
+    ty = max(cy + 14, 18)
+    cv2.putText(scene, label, (cx + 10, ty),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 2, cv2.LINE_AA)
 
 
 def create_capture(source_url: str):
@@ -132,7 +186,9 @@ class StreamPipeline:
         # frame only - a multi-second face pass can therefore never stall
         # tracking or the MJPEG overlay.
         self._heavy_names = [
-            name for name in ("face_verification", "anpr") if name in self.analyzers
+            name
+            for name in ("face_verification", "anpr", "suspicious_activity")
+            if name in self.analyzers
         ]
         self._light_names = [
             name for name in self.analyzers if name not in self._heavy_names
@@ -165,6 +221,13 @@ class StreamPipeline:
         self._last_condition_check = 0.0
         self._last_condition_log = 0.0
         self._last_logged_condition = None
+        # Per-track {track_id: [(cx, cy, capture_epoch), ...]} observation
+        # history, used by the MJPEG path to extrapolate a track's position
+        # onto the LIVE frame between ByteTrack observations (velocity-based,
+        # capped - never a second tracker).
+        self._track_histories: Dict[int, list] = {}
+        self._overlay_diag_last = 0.0  # throttle for the [OVERLAY] age log
+        self._last_anpr_at = 0.0  # ANPR cadence guard (heavy worker)
         if "tracking" in self.capabilities:
             logger.info("[FENCE] Zone monitor will initialize with the first frame size")
 
@@ -219,11 +282,26 @@ class StreamPipeline:
         """Latest result of every capability on this stream."""
         with self._results_lock:
             results = {name: dict(payload) for name, payload in self._results.items()}
+        cap = self.capture.latest()
+        display_frame_id = cap.frame_id if cap is not None else None
+        track_payload = results.get("tracking") or {}
+        track_frame_id = track_payload.get("frame_id")
         return {
             "stream_id": self.stream_id,
             "running": self.is_running,
             "frames_seen": self._frames_seen,
             "results": results,
+            # Overlay synchronization diagnostics: the difference between the
+            # displayed frame and the frame the tracking result was computed
+            # on.  After velocity extrapolation the VISUAL age is near zero;
+            # this raw age still reveals how far inference falls behind.
+            "display_frame_id": display_frame_id,
+            "tracking_result_frame_id": track_frame_id,
+            "overlay_age_frames": (
+                (display_frame_id - track_frame_id)
+                if display_frame_id is not None and track_frame_id is not None
+                else None
+            ),
             "frame_available": self._latest_frame is not None,
             "degradation": self._degradation.as_dict(),
             "adaptive": {
@@ -246,12 +324,13 @@ class StreamPipeline:
         }
 
     def latest_frame_jpeg(self) -> Optional[bytes]:
-        """Return the current capture frame with the latest AI overlay.
+        """Return the current capture frame with a live-synced AI overlay.
 
         Capture owns the raw, continuously-updating frame buffer.  Inference
-        may be much slower, so its latest tracks are drawn over whichever raw
-        frame is current instead of publishing an old annotated image.  This
-        is deliberately separate from ``_loop`` so model execution can never
+        may be much slower, so the latest ByteTrack state is projected onto
+        whichever raw frame is current (velocity extrapolation, capped) and
+        drawn there instead of publishing an old annotated image.  This is
+        deliberately separate from ``_loop`` so model execution can never
         stall the browser video path.
         """
         captured = self.capture.latest()
@@ -260,7 +339,36 @@ class StreamPipeline:
         with self._results_lock:
             payloads = {name: dict(payload) for name, payload in self._results.items()}
             degradation = self._degradation
-        frame = self._annotate_frame(captured.data, payloads, degradation)
+            histories = {k: list(v) for k, v in self._track_histories.items()}
+        tracking_payload = payloads.get("tracking")
+        if tracking_payload:
+            projected = self._project_tracking(
+                tracking_payload.get("tracks", []),
+                tracking_payload.get("frame_id"),
+                tracking_payload.get("timestamp"),
+                captured.frame_id,
+                captured.data.shape,
+                histories,
+            )
+            payloads["tracking"] = {**tracking_payload, "tracks": projected}
+        # ------------------------------------------------------- diagnostics
+        nowm = time.monotonic()
+        if nowm - self._overlay_diag_last >= 2.0:
+            self._overlay_diag_last = nowm
+            if tracking_payload:
+                rfid = tracking_payload.get("frame_id")
+                age = (captured.frame_id - rfid) if rfid is not None else None
+                logger.info(
+                    "[OVERLAY] stream=%s display=%s result=%s age=%s frames latency=%sms",
+                    self.stream_id, captured.frame_id, rfid, age,
+                    tracking_payload.get("latency_ms"),
+                )
+        try:
+            frame = self._annotate_frame(captured.data, payloads, degradation)
+        except Exception:
+            # A rendering bug must never kill the browser video path.
+            logger.exception("[stream %s] overlay failed; serving raw frame", self.stream_id)
+            frame = captured.data
         ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
         return encoded.tobytes() if ok else None
 
@@ -326,6 +434,10 @@ class StreamPipeline:
                          (0.9 * width, 0.95 * height), (0.1 * width, 0.95 * height)],
                         zone_name="restricted", inside_threshold=2,
                     )
+                    # Loitering detection needs the fence geometry.
+                    suspicious = self.analyzers.get("suspicious_activity")
+                    if suspicious is not None:
+                        suspicious.set_zone(self._zone_monitor)
                     logger.info("[FENCE] Zone monitor ready for %sx%s", width, height)
                 except Exception:
                     logger.exception("[FENCE] failed to initialize zone monitor")
@@ -375,7 +487,11 @@ class StreamPipeline:
                 self._handle_module_events(name, payload, working_frame)
             self._offer_heavy(frame, working_frame)
             with self._results_lock:
-                self._latest_frame = self._annotate_frame(working_frame, payloads)
+                try:
+                    self._latest_frame = self._annotate_frame(working_frame, payloads)
+                except Exception:
+                    # Never let a rendering bug kill the whole pipeline thread.
+                    logger.exception("[stream %s] overlay failed; keeping raw frame", self.stream_id)
         logger.info("Pipeline stopped for stream %s", self.stream_id)
 
     def _publish_face_overlay(self) -> None:
@@ -388,6 +504,34 @@ class StreamPipeline:
         person box and its re-anchored face box come from the exact same
         sweep, and the red face box can never visibly lag its person.
         """
+        # Record each observed track position (used for lightweight velocity
+        # extrapolation onto the live frame in latest_frame_jpeg).
+        tracking_payload = self._results.get("tracking")
+        if tracking_payload:
+            result_ts = tracking_payload.get("timestamp") or time.time()
+            for t in tracking_payload.get("tracks", []):
+                tid = t.get("track_id")
+                if tid is None:
+                    continue
+                box = t.get("bbox")
+                try:
+                    x1, y1, x2, y2 = (float(v) for v in box)
+                except (TypeError, ValueError):
+                    continue
+                if not (x2 > x1 and y2 > y1):
+                    continue
+                hist = self._track_histories.setdefault(int(tid), [])
+                hist.append(((x1 + x2) / 2.0, (y1 + y2) / 2.0, result_ts))
+                if len(hist) > 3:  # keep only the recent points
+                    del hist[0]
+            # Forget tracks that disappeared more than a few seconds ago.
+            now = time.time()
+            stale = [
+                k for k, v in self._track_histories.items()
+                if not v or now - v[-1][2] > 5.0
+            ]
+            for k in stale:
+                self._track_histories.pop(k, None)
         face_payload = self._results.get("face_verification")
         if face_payload is None:
             return  # no face verification result yet - nothing to overlay
@@ -452,6 +596,15 @@ class StreamPipeline:
                     self._heavy_frame_count % max(1, settings.face_every_n_frames)
                 ):
                     continue
+                # ANPR cadence guard: full OCR is expensive (~1s) and runs on
+                # the same CPU as the real-time tracking thread.  Throttle it
+                # to one run per anpr_interval_seconds so it can never inflate
+                # tracking latency beyond its share of the CPU.
+                if name == "anpr":
+                    now = time.monotonic()
+                    if now - self._last_anpr_at < settings.anpr_interval_seconds:
+                        continue
+                    self._last_anpr_at = now
                 if hasattr(analyzer, "confidence") and name in self._base_confidences:
                     analyzer.confidence = (
                         max(0.1, self._base_confidences[name] * 0.65)
@@ -480,6 +633,11 @@ class StreamPipeline:
                 on_stored = (
                     self._publish_face_overlay if name == "face_verification" else None
                 )
+                if name == "suspicious_activity":
+                    # Geometry checks run on the LATEST tracking tracks.
+                    with self._results_lock:
+                        tracks = (self._results.get("tracking") or {}).get("tracks", [])
+                    analyzer.current_tracks = tracks
                 payload = self._run_analyzer(
                     name, analyzer, frame, working_frame,
                     on_result=on_result, on_stored=on_stored,
@@ -556,12 +714,22 @@ class StreamPipeline:
                     track_id=None, timestamp=time.time(), image=image,
                     dedupe_key=f"face:{face['name']}",
                 )
+        elif name == "suspicious_activity":
+            for event in payload.get("events", []):
+                logger.info("[SUSPICIOUS] %s", event.get("message"))
+                self._emit_alert(
+                    module="suspicious_activity", severity="warning",
+                    message=event.get("message", "suspicious activity"),
+                    track_id=event.get("track_id"), timestamp=time.time(),
+                    image=image,
+                    dedupe_key=f"suspicious:{event.get('type')}:{event.get('track_id')}",
+                )
         elif name == "anpr":
             for plate in payload.get("plates", []):
                 logger.info("[ANPR] Plate detected: %s", plate.get("plate_text"))
                 self._emit_alert(
                     module="anpr", severity="info",
-                    message=f"plate {plate['plate_text']} read (conf {plate.get('confidence', 0.0):.2f})",
+                    message=f"Plate: {plate['plate_text']}",
                     track_id=None, timestamp=time.time(), image=image,
                     dedupe_key=f"plate:{plate['plate_text']}",
                 )
@@ -602,23 +770,98 @@ class StreamPipeline:
             self._degradation.severity > 0.6
         )
 
+    def _project_tracking(self, tracks, result_frame_id, result_ts,
+                             display_frame_id, shape, histories) -> list:
+        """Project tracked boxes from the result frame onto the DISPLAY frame.
+
+        The MJPEG path always annotates the newest captured frame.  Between
+        ByteTrack observations that frame is newer than the result, so we
+        shift each box by ``velocity * age`` computed from the track's last
+        two observations - the same lightweight motion compensation that
+        keeps the overlay visually attached to the person without touching
+        inference cadence or the capture buffer.  Projection is capped:
+        - per-axis displacement is clamped to frame bounds;
+        - beyond ``settings.overlay_extrapolate_max_s`` of staleness the box
+          freezes at its last observed position instead of drifting.
+        """
+        if not tracks or not result_frame_id or display_frame_id <= result_frame_id:
+            return list(tracks)
+        try:
+            age_s = float(time.time() - (result_ts or time.time()))
+        except (TypeError, ValueError):
+            return list(tracks)
+        if age_s <= 0.0:
+            return list(tracks)
+        max_ext = max(0.0, float(settings.overlay_extrapolate_max_s))
+        frame_h, frame_w = shape[0], shape[1]
+        projected = []
+        for t in tracks:
+            out = dict(t)
+            box = _clamp_bbox(t.get("bbox"), shape)
+            if box is None:
+                continue
+            x1, y1, x2, y2 = box
+            tid = t.get("track_id")
+            hist = histories.get(tid) if tid is not None else None
+            dx = dy = 0.0
+            if hist and len(hist) >= 2 and age_s <= max_ext:
+                (px0, py0, t0), (px1, py1, t1) = hist[-2], hist[-1]
+                dt = float(t1) - float(t0)
+                if dt > 1e-6:
+                    dx = (px1 - px0) / dt * age_s
+                    dy = (py1 - py0) / dt * age_s
+                    # Clamp displacement into the frame.
+                    dx = max(-frame_w, min(frame_w, dx))
+                    dy = max(-frame_h, min(frame_h, dy))
+                    # Keep total shift sane even for long extrapolations.
+                    if abs(dx) + abs(dy) > max(frame_h, frame_w):
+                        scale = max(frame_h, frame_w) / (abs(dx) + abs(dy))
+                        dx, dy = dx * scale, dy * scale
+            moved = _clamp_bbox((x1 + int(dx), y1 + int(dy),
+                                 x2 + int(dx), y2 + int(dy)), shape)
+            if moved is not None:
+                out["bbox"] = list(moved)
+            projected.append(out)
+        return projected
+
     def _annotate_frame(self, frame, payloads: Dict[str, Dict[str, Any]], degradation=None):
-        """Render boxes from actual module results onto the published frame."""
+        """Render boxes + tracking points from module results onto a frame."""
         scene = frame.copy()
+        shape = scene.shape
         tracking = payloads.get("tracking", {})
         for track in tracking.get("tracks", []):
-            x1, y1, x2, y2 = (int(value) for value in track["bbox"])
-            inside = self._zone_monitor is not None and self._zone_monitor.is_inside(track["bbox"])
-            color = (0, 0, 255) if inside else (0, 220, 0)
-            label = f"{track['class'].upper()}  ID: {track.get('track_id')}  {track.get('confidence', 0.0) * 100:.0f}%"
-            cv2.rectangle(scene, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(scene, label, (x1, max(y1 - 8, 18)), cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 2, cv2.LINE_AA)
+            try:
+                bbox = _clamp_bbox(track.get("bbox"), shape)
+                if bbox is None:
+                    continue
+                x1, y1, x2, y2 = bbox
+                inside = self._zone_monitor is not None and self._zone_monitor.is_inside(track["bbox"])
+                color = (0, 0, 255) if inside else (0, 220, 0)
+                label = f"{track['class'].upper()}  ID: {track.get('track_id')}  {track.get('confidence', 0.0) * 100:.0f}%"
+                cv2.rectangle(scene, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(scene, label, (x1, max(y1 - 8, 18)), cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 2, cv2.LINE_AA)
+                # Visible centroid marker so every object has a tracking point.
+                _draw_tracking_point(scene, x1, y1, x2, y2, color, f"#{track.get('track_id', '-')}")
+            except Exception:
+                logger.exception("track annotation failed (stream %s)", self.stream_id)
         for face in payloads.get("face_verification", {}).get("faces", []):
-            x1, y1, x2, y2 = (int(value) for value in face["bbox"])
+            box = _clamp_bbox(face.get("bbox"), shape)
+            if box is None:
+                continue
+            x1, y1, x2, y2 = box
             color = (0, 200, 0) if face.get("name") != "UNKNOWN" else (0, 0, 220)
             label = f"FACE: {face.get('name', 'UNKNOWN')}  {face.get('confidence', 0.0) * 100:.0f}%"
             cv2.rectangle(scene, (x1, y1), (x2, y2), color, 2)
             cv2.putText(scene, label, (x1, min(y2 + 20, scene.shape[0] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 2, cv2.LINE_AA)
+        for plate in payloads.get("anpr", {}).get("plates", []):
+            box = _clamp_bbox(plate.get("bbox"), shape)
+            if box is None:
+                continue
+            x1, y1, x2, y2 = box
+            color = (0, 255, 255)  # yellow plate box
+            label = f"PLATE: {plate.get('plate_text', '')}  {plate.get('confidence', 0.0) * 100:.0f}%"
+            cv2.rectangle(scene, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(scene, label, (x1, max(y1 - 8, 18)), cv2.FONT_HERSHEY_SIMPLEX, 0.52, color, 2, cv2.LINE_AA)
         if self._zone_monitor is not None:
             self._zone_monitor.draw_polygon(scene)
         report = degradation or self._degradation
@@ -628,7 +871,6 @@ class StreamPipeline:
             cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA,
         )
         return scene
-
     def _maybe_persist(self, name: str, payload: Dict[str, Any]) -> None:
         """Persist the latest result as an Event row every N seconds."""
         now = time.monotonic()
