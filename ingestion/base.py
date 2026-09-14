@@ -216,6 +216,11 @@ class LatestFrameBuffer:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._latest: Optional[np.ndarray] = None
+        # Alias required by the IBVAP perf spec: the single latest-frame
+        # slot lives in self._frame (kept in sync with self._latest).
+        # Only the newest frame is ever retained; intermediate frames are
+        # discarded immediately on overwrite.
+        self._frame: Optional[np.ndarray] = None
         self._frame_id = 0
         self._running = False
         self._read_failures = 0
@@ -251,7 +256,7 @@ class LatestFrameBuffer:
         ``cap.read()``.  ``ok`` is ``False`` until the first frame arrives.
         """
         with self._lock:
-            frame = self._latest
+            frame = self._frame if self._frame is not None else self._latest
         return (frame is not None, frame)
 
     @property
@@ -284,6 +289,9 @@ class LatestFrameBuffer:
             self._read_failures = 0
             with self._lock:
                 self._frame_id += 1
+                # Store ONLY the latest frame; all intermediate frames are
+                # discarded immediately by this overwrite (never a queue).
+                self._frame = frame
                 self._latest = frame  # overwrite: older frames are discarded
             if self.on_frame is not None:
                 # Called outside the lock so a slow display/stream hook can

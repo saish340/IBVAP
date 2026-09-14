@@ -30,10 +30,10 @@ class Settings:
 
         # Inference
         self.yolo_model: str = os.getenv("YOLO_MODEL", "yolov8n.pt")
-        # Run analyzers on every Nth frame (1 = every frame).  Lower = fresher
-        # tracking overlay; 2 balances CPU (typical YOLO pass is ~100-400 ms)
-        # with a visually responsive box.  Raise for very constrained CPUs.
-        self.process_every_n_frames: int = max(1, int(os.getenv("PROCESS_EVERY_N_FRAMES", "2")))
+        # Run analyzers on every Nth frame (1 = every frame).  Lower = more
+        # responsive live feed; 3 is the demo default balancing freshness
+        # against CPU (typical YOLO pass is ~100-400 ms).
+        self.process_every_n_frames: int = max(1, int(os.getenv("PROCESS_EVERY_N_FRAMES", "3")))
         # How far (seconds) the MJPEG overlay may extrapolate a track's
         # position past its last ByteTrack observation using velocity, to
         # keep the box attached to the LIVE frame between detections.
@@ -57,8 +57,31 @@ class Settings:
         # ArcFace).  On the stream pipeline it runs on a dedicated worker
         # thread, and only on every Nth frame offered to that worker
         # (1 = every offered frame), keeping tracking refresh-rate high.
+        # FACE_VERIFY_EVERY_N_FRAMES is the perf-tuning knob (default 10);
+        # FACE_EVERY_N_FRAMES is kept as a legacy alias.
         self.face_every_n_frames: int = max(
-            1, int(os.getenv("FACE_EVERY_N_FRAMES", "5"))
+            1, int(os.getenv(
+                "FACE_VERIFY_EVERY_N_FRAMES",
+                os.getenv("FACE_EVERY_N_FRAMES", "10"),
+            ))
+        )
+        # Canonical name used by the pipeline worker.
+        self.face_verify_every_n_frames: int = self.face_every_n_frames
+        # How long a cached face verification result stays overlaid between
+        # verification runs (seconds). Bounding boxes + MATCH/UNKNOWN labels
+        # persist on frames where verification did not run until expiry.
+        self.face_cache_ttl_seconds: float = max(
+            0.5, float(os.getenv("FACE_CACHE_TTL_SECONDS", "2"))
+        )
+        # ANPR (OCR) cadence: only run every Nth frame offered to the heavy
+        # worker (default 15). Combined with vehicle-gated ROI cropping this
+        # keeps PaddleOCR off the full frame and off empty frames.
+        self.anpr_every_n_frames: int = max(
+            1, int(os.getenv("ANPR_EVERY_N_FRAMES", "15"))
+        )
+        # How long a cached plate read stays overlaid (seconds).
+        self.anpr_cache_ttl_seconds: float = max(
+            0.5, float(os.getenv("ANPR_CACHE_TTL_SECONDS", "3"))
         )
         # How long a verified face may keep being re-drawn from its person
         # track (face -> person association) before it is expired.  Must

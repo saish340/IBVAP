@@ -166,6 +166,8 @@ class ANPREngine:
         # by the vehicle score - a distant car at 0.30 still carries a
         # readable plate.
         self.vehicle_conf = 0.25
+        # Set of plate texts that should be suppressed (not drawn on frame)
+        self._suppressed_plates: set = set()
 
     # ----------------------------------------------------------- inference
     def _detect_plates(
@@ -393,6 +395,10 @@ class ANPREngine:
                     self._last_logged[text] = now
                     _log.info("ANPR unique read: %s (%.2f)", text, ocr_conf)
 
+                # Skip suppressed plates - don't draw box on frame
+                if text in self._suppressed_plates:
+                    continue
+
                 results.append(
                     {
                         "plate_text": text,
@@ -418,6 +424,9 @@ class ANPREngine:
         for text, conf, bbox in lines:
             clean = _NON_ALNUM.sub("", text.upper())
             if not self._is_plate_like(clean) or conf < self.confidence_threshold:
+                continue
+            # Skip suppressed plates - don't draw box on frame
+            if clean in self._suppressed_plates:
                 continue
             prev = self._last_logged.get(clean)
             if prev is None or (now - prev) > self.dedupe_ttl:
@@ -534,6 +543,23 @@ class ANPREngine:
         return any(ch.isdigit() for ch in clean) and sum(
             ch.isalpha() for ch in clean
         ) >= _MIN_PLATE_LETTERS
+
+    # --------------------------------------------------- plate suppression
+    def suppress_plate(self, plate_text: str) -> None:
+        """Suppress a plate so its box is no longer drawn on frames."""
+        self._suppressed_plates.add(plate_text.upper())
+
+    def unsuppress_plate(self, plate_text: str) -> None:
+        """Unsuppress a plate so its box is drawn again on frames."""
+        self._suppressed_plates.discard(plate_text.upper())
+
+    def unsuppress_all(self) -> None:
+        """Clear all suppressed plates."""
+        self._suppressed_plates.clear()
+
+    def is_suppressed(self, plate_text: str) -> bool:
+        """Check if a plate is currently suppressed."""
+        return plate_text.upper() in self._suppressed_plates
 
     # ----------------------------------------------------------- cleanup
     def close(self) -> None:

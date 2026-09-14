@@ -24,6 +24,19 @@ def _get_stream(db: Session, stream_id: int) -> Stream:
     return stream
 
 
+def _get_anpr_engine(stream_id: int):
+    """Get the ANPREngine instance for a stream, or None if not available."""
+    pipeline = pipeline_manager.get(stream_id)
+    if pipeline is None:
+        return None
+    analyzer = pipeline.analyzers.get("anpr")
+    if analyzer is None:
+        return None
+    # Ensure the model is loaded and return the underlying ANPREngine
+    analyzer.ensure_loaded()
+    return getattr(analyzer, "_model", None)
+
+
 @router.get("/capabilities", summary="List available inference capabilities")
 def capabilities() -> dict:
     return {"capabilities": list_capabilities()}
@@ -64,6 +77,56 @@ def run_capability(stream_id: int, capability: str, db: Session = Depends(get_db
             detail="No frame available yet — the source may still be connecting.",
         )
     return result
+
+
+@router.post(
+    "/streams/{stream_id}/plates/{plate_text}/suppress",
+    summary="Suppress a number plate so its box is no longer drawn",
+)
+def suppress_plate(stream_id: int, plate_text: str, db: Session = Depends(get_db)) -> dict:
+    """Suppress a plate so its bounding box is no longer drawn on frames."""
+    _get_stream(db, stream_id)
+    engine = _get_anpr_engine(stream_id)
+    if engine is None:
+        raise HTTPException(
+            status_code=409,
+            detail="ANPR is not enabled for this stream",
+        )
+    engine.suppress_plate(plate_text)
+    return {"status": "suppressed", "plate": plate_text.upper(), "stream_id": stream_id}
+
+
+@router.delete(
+    "/streams/{stream_id}/plates/{plate_text}/suppress",
+    summary="Unsuppress a number plate so its box is drawn again",
+)
+def unsuppress_plate(stream_id: int, plate_text: str, db: Session = Depends(get_db)) -> dict:
+    """Unsuppress a plate so its bounding box is drawn again on frames."""
+    _get_stream(db, stream_id)
+    engine = _get_anpr_engine(stream_id)
+    if engine is None:
+        raise HTTPException(
+            status_code=409,
+            detail="ANPR is not enabled for this stream",
+        )
+    engine.unsuppress_plate(plate_text)
+    return {"status": "unsuppressed", "plate": plate_text.upper(), "stream_id": stream_id}
+
+
+@router.get(
+    "/streams/{stream_id}/plates/suppressed",
+    summary="List all suppressed plates for a stream",
+)
+def list_suppressed_plates(stream_id: int, db: Session = Depends(get_db)) -> dict:
+    """List all currently suppressed plates for a stream."""
+    _get_stream(db, stream_id)
+    engine = _get_anpr_engine(stream_id)
+    if engine is None:
+        raise HTTPException(
+            status_code=409,
+            detail="ANPR is not enabled for this stream",
+        )
+    return {"suppressed_plates": list(engine._suppressed_plates), "stream_id": stream_id}
 
 
 @router.get("/events", response_model=List[EventOut], summary="Persisted analysis events")

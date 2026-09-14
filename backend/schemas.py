@@ -17,8 +17,10 @@ class StreamCreate(BaseModel):
         max_length=500,
         examples=["rtsp://user:pass@camera.local:554/stream1"],
     )
-    #: inference capabilities to attach to this stream
-    capabilities: List[str] = Field(default_factory=lambda: ["detection"])
+    #: inference capabilities to attach to this stream.
+    # tracking is included by default so intrusion detection (virtual fence)
+    # works out of the box - without tracks the zone monitor never initializes.
+    capabilities: List[str] = Field(default_factory=lambda: ["detection", "tracking"])
     #: start analyzing immediately after creation
     auto_start: bool = True
 

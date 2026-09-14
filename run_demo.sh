@@ -4,6 +4,24 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+# Fail fast BEFORE starting anything: every required port must be free.
+# (RTSP camera :8554, backend :8000, frontend :5173)
+port_in_use() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -t -i:"$port" >/dev/null 2>&1
+  else
+    (echo > /dev/tcp/127.0.0.1/"$port") >/dev/null 2>&1
+  fi
+}
+
+for PORT in 8554 8000 5173; do
+  if port_in_use "$PORT"; then
+    echo "[demo] ERROR: Port $PORT is already in use — run: kill \$(lsof -t -i:$PORT)" >&2
+    exit 1
+  fi
+done
+
 RESET=0
 if [[ "${1:-}" == "--reset" ]]; then
   RESET=1
