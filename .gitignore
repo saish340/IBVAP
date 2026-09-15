@@ -38,6 +38,7 @@ tools/
 
 # --- Demo videos & debug captures dropped in repo root (downloaded at runtime) ---
 /*.mp4
+/*.webm
 /*.jpg
 
 # --- IDE / OS ---

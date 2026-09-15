@@ -1,0 +1,182 @@
+{
+ "video": "car moving 2.mp4",
+ "slug": "car_moving_2",
+ "errors": [],
+ "frames_processed": 25,
+ "detect_lat_ms": [
+  2732.0,
+  37.2,
+  32.2,
+  34.5,
+  30.4,
+  30.2,
+  29.1,
+  30.8,
+  28.4,
+  31.6,
+  25.7,
+  32.7,
+  32.2,
+  29.7,
+  30.0,
+  31.3,
+  27.3,
+  31.8,
+  31.3,
+  28.5,
+  29.9,
+  28.3,
+  28.5,
+  29.1,
+  28.8
+ ],
+ "condition_lat_ms": [
+  54.3,
+  23.4,
+  23.2,
+  22.5,
+  22.7,
+  24.1,
+  24.5,
+  26.9,
+  24.2,
+  24.6,
+  24.2,
+  25.4,
+  25.3,
+  24.6,
+  26.5,
+  23.0,
+  25.3,
+  27.9,
+  27.1,
+  25.3,
+  23.7,
+  24.0,
+  22.6,
+  24.1,
+  24.0
+ ],
+ "conditions": [
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR"
+ ],
+ "enhance_methods": [],
+ "tracks_seen": {
+  "1": 25,
+  "2": 25,
+  "3": 25,
+  "4": 25,
+  "5": 25,
+  "6": 22,
+  "7": 25
+ },
+ "classes_seen": {
+  "car": 47,
+  "motorcycle": 125
+ },
+ "fence_events": [
+  {
+   "track_id": 1,
+   "class": "car",
+   "timestamp": 1789457985.43511,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 3,
+   "class": "motorcycle",
+   "timestamp": 1789457985.43511,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 4,
+   "class": "motorcycle",
+   "timestamp": 1789457985.43511,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 6,
+   "class": "car",
+   "timestamp": 1789457985.43511,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 7,
+   "class": "motorcycle",
+   "timestamp": 1789457985.43511,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 6,
+   "class": "car",
+   "timestamp": 1789457986.594361,
+   "zone_name": "restricted"
+  }
+ ],
+ "suspicious_events": [
+  {
+   "type": "running",
+   "track_id": 6,
+   "bbox": [
+    782.9,
+    247.7,
+    1107.8,
+    390.4
+   ],
+   "speed_px_s": 1244.8,
+   "message": "Running: person 6 at 1245 px/s (threshold 300)"
+  }
+ ],
+ "anpr": {
+  "plates": [
+   {
+    "plate_text": "T",
+    "confidence": 0.5933,
+    "bbox": [
+     783,
+     297,
+     989,
+     387
+    ]
+   }
+  ],
+  "latency_ms": 15211.9
+ },
+ "face": {
+  "faces": [],
+  "latency_ms": 24851.4
+ },
+ "screenshots": [
+  "car_moving_2_detection.jpg",
+  "car_moving_2_tracking.jpg"
+ ],
+ "width": 1280,
+ "height": 720,
+ "fps": 30.0,
+ "n_total": 930,
+ "duration_s": 31.0,
+ "wall_s": 4.2
+}

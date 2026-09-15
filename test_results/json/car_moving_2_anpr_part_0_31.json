@@ -1,0 +1,298 @@
+[
+ {
+  "frame": 0,
+  "latency_s": 14.62,
+  "plates": []
+ },
+ {
+  "frame": 10,
+  "latency_s": 8.69,
+  "plates": [
+   {
+    "plate_text": "T",
+    "confidence": 0.5777,
+    "bbox": [
+     782,
+     297,
+     989,
+     387
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 20,
+  "latency_s": 13.2,
+  "plates": [
+   {
+    "plate_text": "4",
+    "confidence": 0.5796,
+    "bbox": [
+     773,
+     299,
+     980,
+     396
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 30,
+  "latency_s": 8.82,
+  "plates": []
+ },
+ {
+  "frame": 40,
+  "latency_s": 10.51,
+  "plates": []
+ },
+ {
+  "frame": 50,
+  "latency_s": 10.62,
+  "plates": [
+   {
+    "plate_text": "S",
+    "confidence": 0.6126,
+    "bbox": [
+     671,
+     345,
+     759,
+     371
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 60,
+  "latency_s": 11.19,
+  "plates": []
+ },
+ {
+  "frame": 70,
+  "latency_s": 7.01,
+  "plates": []
+ },
+ {
+  "frame": 80,
+  "latency_s": 8.51,
+  "plates": []
+ },
+ {
+  "frame": 90,
+  "latency_s": 10.48,
+  "plates": [
+   {
+    "plate_text": "5",
+    "confidence": 0.5169,
+    "bbox": [
+     221,
+     500,
+     271,
+     528
+    ]
+   },
+   {
+    "plate_text": "03",
+    "confidence": 0.7967,
+    "bbox": [
+     906,
+     301,
+     942,
+     325
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 100,
+  "latency_s": 7.03,
+  "plates": [
+   {
+    "plate_text": "5",
+    "confidence": 0.509,
+    "bbox": [
+     220,
+     500,
+     270,
+     528
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 110,
+  "latency_s": 8.64,
+  "plates": []
+ },
+ {
+  "frame": 120,
+  "latency_s": 9.9,
+  "plates": []
+ },
+ {
+  "frame": 130,
+  "latency_s": 7.4,
+  "plates": []
+ },
+ {
+  "frame": 140,
+  "latency_s": 10.7,
+  "plates": [
+   {
+    "plate_text": "L",
+    "confidence": 0.5203,
+    "bbox": [
+     217,
+     501,
+     266,
+     529
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 150,
+  "latency_s": 9.19,
+  "plates": []
+ },
+ {
+  "frame": 160,
+  "latency_s": 8.71,
+  "plates": []
+ },
+ {
+  "frame": 170,
+  "latency_s": 6.42,
+  "plates": []
+ },
+ {
+  "frame": 180,
+  "latency_s": 7.32,
+  "plates": []
+ },
+ {
+  "frame": 190,
+  "latency_s": 4.18,
+  "plates": []
+ },
+ {
+  "frame": 200,
+  "latency_s": 5.87,
+  "plates": []
+ },
+ {
+  "frame": 210,
+  "latency_s": 9.99,
+  "plates": []
+ },
+ {
+  "frame": 220,
+  "latency_s": 7.86,
+  "plates": [
+   {
+    "plate_text": "VATVE",
+    "confidence": 0.6314,
+    "bbox": [
+     598,
+     400,
+     846,
+     474
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 230,
+  "latency_s": 6.58,
+  "plates": [
+   {
+    "plate_text": "02NN1826",
+    "confidence": 0.8925,
+    "bbox": [
+     647,
+     484,
+     736,
+     506
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 240,
+  "latency_s": 9.85,
+  "plates": []
+ },
+ {
+  "frame": 250,
+  "latency_s": 4.22,
+  "plates": [
+   {
+    "plate_text": "COLVO",
+    "confidence": 0.8119,
+    "bbox": [
+     205,
+     375,
+     775,
+     538
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 260,
+  "latency_s": 2.63,
+  "plates": [
+   {
+    "plate_text": "VOZVO",
+    "confidence": 0.7079,
+    "bbox": [
+     37,
+     362,
+     649,
+     574
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 270,
+  "latency_s": 2.11,
+  "plates": []
+ },
+ {
+  "frame": 280,
+  "latency_s": 2.19,
+  "plates": [
+   {
+    "plate_text": "LA",
+    "confidence": 0.5161,
+    "bbox": [
+     0,
+     508,
+     285,
+     637
+    ]
+   },
+   {
+    "plate_text": "LA",
+    "confidence": 0.5161,
+    "bbox": [
+     0,
+     508,
+     285,
+     637
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 290,
+  "latency_s": 3.23,
+  "plates": []
+ },
+ {
+  "frame": 300,
+  "latency_s": 1.47,
+  "plates": []
+ }
+]

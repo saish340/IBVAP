@@ -1,0 +1,197 @@
+{
+ "video": "people walking 2.mp4",
+ "slug": "people_walking_2",
+ "errors": [],
+ "frames_processed": 25,
+ "detect_lat_ms": [
+  1841.5,
+  34.1,
+  27.9,
+  32.0,
+  30.2,
+  30.0,
+  36.9,
+  31.7,
+  34.0,
+  29.1,
+  27.2,
+  31.6,
+  29.7,
+  27.3,
+  32.8,
+  27.8,
+  27.1,
+  32.8,
+  32.7,
+  28.0,
+  30.1,
+  30.9,
+  36.5,
+  32.9,
+  34.8
+ ],
+ "condition_lat_ms": [
+  29.0,
+  20.3,
+  18.7,
+  18.8,
+  18.4,
+  18.3,
+  23.9,
+  19.6,
+  19.0,
+  19.9,
+  21.4,
+  20.1,
+  18.9,
+  20.5,
+  19.2,
+  17.5,
+  18.7,
+  21.2,
+  19.0,
+  20.8,
+  17.7,
+  18.0,
+  18.1,
+  17.1,
+  17.9
+ ],
+ "conditions": [
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR"
+ ],
+ "enhance_methods": [],
+ "tracks_seen": {
+  "1": 25,
+  "2": 25,
+  "3": 25,
+  "4": 25,
+  "5": 25,
+  "6": 25,
+  "7": 25,
+  "8": 18,
+  "9": 1,
+  "10": 2
+ },
+ "classes_seen": {
+  "person": 196
+ },
+ "fence_events": [
+  {
+   "track_id": 1,
+   "class": "person",
+   "timestamp": 1789458081.074909,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 2,
+   "class": "person",
+   "timestamp": 1789458081.074909,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 3,
+   "class": "person",
+   "timestamp": 1789458081.074909,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 4,
+   "class": "person",
+   "timestamp": 1789458081.074909,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 5,
+   "class": "person",
+   "timestamp": 1789458081.074909,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 6,
+   "class": "person",
+   "timestamp": 1789458081.074909,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 7,
+   "class": "person",
+   "timestamp": 1789458081.074909,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 8,
+   "class": "person",
+   "timestamp": 1789458081.4529088,
+   "zone_name": "restricted"
+  }
+ ],
+ "suspicious_events": [
+  {
+   "type": "running",
+   "track_id": 1,
+   "bbox": [
+    803.5,
+    448.2,
+    863.6,
+    562.5
+   ],
+   "speed_px_s": 436.2,
+   "message": "Running: person 1 at 436 px/s (threshold 300)"
+  },
+  {
+   "type": "running",
+   "track_id": 3,
+   "bbox": [
+    852.5,
+    448.4,
+    900.2,
+    563.1
+   ],
+   "speed_px_s": 317.8,
+   "message": "Running: person 3 at 318 px/s (threshold 300)"
+  }
+ ],
+ "anpr": {
+  "plates": [],
+  "latency_ms": 3068.7
+ },
+ "face": {
+  "faces": [],
+  "latency_ms": 18718.4
+ },
+ "screenshots": [
+  "people_walking_2_detection.jpg",
+  "people_walking_2_tracking.jpg"
+ ],
+ "width": 1280,
+ "height": 720,
+ "fps": 23.97,
+ "n_total": 584,
+ "duration_s": 24.4,
+ "wall_s": 3.2
+}

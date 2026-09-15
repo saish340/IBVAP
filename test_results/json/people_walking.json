@@ -1,0 +1,279 @@
+{
+ "video": "people walking.mp4",
+ "slug": "people_walking",
+ "errors": [],
+ "frames_processed": 25,
+ "detect_lat_ms": [
+  1785.3,
+  38.3,
+  39.9,
+  31.2,
+  30.9,
+  31.0,
+  31.1,
+  45.4,
+  41.2,
+  34.2,
+  24.6,
+  33.7,
+  34.1,
+  34.8,
+  28.8,
+  29.9,
+  34.2,
+  36.4,
+  38.2,
+  35.1,
+  41.0,
+  38.6,
+  37.5,
+  40.8,
+  40.2
+ ],
+ "condition_lat_ms": [
+  48.4,
+  43.8,
+  41.3,
+  41.6,
+  41.8,
+  48.4,
+  43.2,
+  47.3,
+  42.2,
+  43.0,
+  42.9,
+  41.3,
+  40.5,
+  42.6,
+  40.6,
+  41.0,
+  42.4,
+  41.8,
+  42.7,
+  42.6,
+  43.4,
+  43.6,
+  41.5,
+  46.3,
+  44.2
+ ],
+ "conditions": [
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR",
+  "CLEAR"
+ ],
+ "enhance_methods": [],
+ "tracks_seen": {
+  "1": 25,
+  "2": 25,
+  "3": 25,
+  "4": 25,
+  "5": 25,
+  "6": 25,
+  "7": 25,
+  "8": 25,
+  "9": 25,
+  "10": 25,
+  "11": 25,
+  "12": 25,
+  "13": 25,
+  "14": 25,
+  "15": 25,
+  "16": 25,
+  "17": 25,
+  "18": 25,
+  "19": 25,
+  "20": 22,
+  "21": 15,
+  "22": 25,
+  "23": 25,
+  "24": 20,
+  "25": 6,
+  "26": 21
+ },
+ "classes_seen": {
+  "car": 25,
+  "person": 584
+ },
+ "fence_events": [
+  {
+   "track_id": 1,
+   "class": "car",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 2,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 4,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 6,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 7,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 8,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 9,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 10,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 11,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 12,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 14,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 13,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 19,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 22,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 15,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 17,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 16,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 18,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 24,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 21,
+   "class": "person",
+   "timestamp": 1789458149.6195118,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 26,
+   "class": "person",
+   "timestamp": 1789458149.9464545,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 25,
+   "class": "person",
+   "timestamp": 1789458150.685425,
+   "zone_name": "restricted"
+  },
+  {
+   "track_id": 24,
+   "class": "person",
+   "timestamp": 1789458151.0987988,
+   "zone_name": "restricted"
+  }
+ ],
+ "suspicious_events": [],
+ "anpr": {
+  "plates": [],
+  "latency_ms": 1264.4
+ },
+ "face": {
+  "faces": [],
+  "latency_ms": 14053.8
+ },
+ "screenshots": [
+  "people_walking_detection.jpg",
+  "people_walking_tracking.jpg"
+ ],
+ "width": 1920,
+ "height": 1080,
+ "fps": 25.0,
+ "n_total": 472,
+ "duration_s": 18.9,
+ "wall_s": 3.9
+}

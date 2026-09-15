@@ -1,0 +1,321 @@
+[
+ {
+  "frame": 620,
+  "latency_s": 13.17,
+  "plates": [
+   {
+    "plate_text": "1",
+    "confidence": 0.6254,
+    "bbox": [
+     952,
+     422,
+     1172,
+     493
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 630,
+  "latency_s": 3.62,
+  "plates": [
+   {
+    "plate_text": "1",
+    "confidence": 0.7102,
+    "bbox": [
+     953,
+     422,
+     1174,
+     493
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 640,
+  "latency_s": 4.97,
+  "plates": [
+   {
+    "plate_text": "XA02MH7256",
+    "confidence": 0.9164,
+    "bbox": [
+     999,
+     362,
+     1081,
+     388
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 650,
+  "latency_s": 3.89,
+  "plates": [
+   {
+    "plate_text": "KA02MH7256",
+    "confidence": 0.9553,
+    "bbox": [
+     999,
+     362,
+     1081,
+     388
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 660,
+  "latency_s": 5.61,
+  "plates": [
+   {
+    "plate_text": "2",
+    "confidence": 0.5955,
+    "bbox": [
+     53,
+     509,
+     271,
+     613
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 670,
+  "latency_s": 4.73,
+  "plates": []
+ },
+ {
+  "frame": 680,
+  "latency_s": 1.67,
+  "plates": [
+   {
+    "plate_text": "KA02MH7256",
+    "confidence": 0.9625,
+    "bbox": [
+     999,
+     362,
+     1081,
+     388
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 690,
+  "latency_s": 5.39,
+  "plates": []
+ },
+ {
+  "frame": 700,
+  "latency_s": 4.71,
+  "plates": [
+   {
+    "plate_text": "KA02MH7256",
+    "confidence": 0.9742,
+    "bbox": [
+     999,
+     362,
+     1081,
+     388
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 710,
+  "latency_s": 7.93,
+  "plates": [
+   {
+    "plate_text": "KA02MH7256",
+    "confidence": 0.9295,
+    "bbox": [
+     1001,
+     362,
+     1081,
+     388
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 720,
+  "latency_s": 12.89,
+  "plates": [
+   {
+    "plate_text": "KA02MH7256",
+    "confidence": 0.9328,
+    "bbox": [
+     1001,
+     362,
+     1081,
+     388
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 730,
+  "latency_s": 11.32,
+  "plates": [
+   {
+    "plate_text": "KA02MH7256",
+    "confidence": 0.9322,
+    "bbox": [
+     1001,
+     362,
+     1081,
+     388
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 740,
+  "latency_s": 7.48,
+  "plates": [
+   {
+    "plate_text": "KA02MHH7256",
+    "confidence": 0.8214,
+    "bbox": [
+     1001,
+     362,
+     1081,
+     388
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 750,
+  "latency_s": 9.67,
+  "plates": [
+   {
+    "plate_text": "KA02MH7256",
+    "confidence": 0.9009,
+    "bbox": [
+     1001,
+     362,
+     1081,
+     388
+    ]
+   },
+   {
+    "plate_text": "2",
+    "confidence": 0.6897,
+    "bbox": [
+     129,
+     452,
+     239,
+     506
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 760,
+  "latency_s": 7.45,
+  "plates": [
+   {
+    "plate_text": "KA02MH7256",
+    "confidence": 0.8948,
+    "bbox": [
+     1001,
+     362,
+     1081,
+     388
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 770,
+  "latency_s": 7.28,
+  "plates": [
+   {
+    "plate_text": "KA02MH7256",
+    "confidence": 0.952,
+    "bbox": [
+     1001,
+     362,
+     1081,
+     388
+    ]
+   }
+  ]
+ },
+ {
+  "frame": 780,
+  "latency_s": 2.13,
+  "plates": []
+ },
+ {
+  "frame": 790,
+  "latency_s": 1.03,
+  "plates": []
+ },
+ {
+  "frame": 800,
+  "latency_s": 1.15,
+  "plates": []
+ },
+ {
+  "frame": 810,
+  "latency_s": 1.48,
+  "plates": []
+ },
+ {
+  "frame": 820,
+  "latency_s": 1.37,
+  "plates": []
+ },
+ {
+  "frame": 830,
+  "latency_s": 1.37,
+  "plates": []
+ },
+ {
+  "frame": 840,
+  "latency_s": 1.43,
+  "plates": []
+ },
+ {
+  "frame": 850,
+  "latency_s": 1.96,
+  "plates": []
+ },
+ {
+  "frame": 860,
+  "latency_s": 0.98,
+  "plates": []
+ },
+ {
+  "frame": 870,
+  "latency_s": 1.34,
+  "plates": []
+ },
+ {
+  "frame": 880,
+  "latency_s": 1.54,
+  "plates": []
+ },
+ {
+  "frame": 890,
+  "latency_s": 1.56,
+  "plates": []
+ },
+ {
+  "frame": 900,
+  "latency_s": 1.19,
+  "plates": []
+ },
+ {
+  "frame": 910,
+  "latency_s": 1.89,
+  "plates": []
+ },
+ {
+  "frame": 920,
+  "latency_s": 1.22,
+  "plates": []
+ }
+]
