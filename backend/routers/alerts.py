@@ -22,8 +22,9 @@ logger = logging.getLogger(__name__)
 async def ws_alerts(websocket: WebSocket) -> None:
     """Realtime alert stream.
 
-    Connect from the browser:
-        new WebSocket("ws://localhost:8000/ws/alerts")
+    Same-origin (nginx): ``new WebSocket("ws(s)://<host>/ws/alerts")``.
+    Split deploy (Vercel + HF/Render): build the URL from ``VITE_WS_URL`` —
+    never hardcode localhost in the frontend (see ``frontend/src/App.jsx``).
 
     The client receives one JSON message per ingested alert. The server
     keeps the socket open and ignores anything the client sends.

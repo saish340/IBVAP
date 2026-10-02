@@ -1,5 +1,14 @@
 # IBVAP backend requirements (Python 3.11)
 #
+# Two install flavours share this file:
+#   * FULL (VPS / Render paid):  pip install -r requirements.txt
+#       everything below, incl. DeepFace/TensorFlow face stack.
+#   * HF FREE DEMO:              pip install -r requirements-hf.txt
+#       lean CPU-only set (YOLO + ByteTrack + OCR/ONNX + FastAPI).
+#       DeepFace/TensorFlow + MediaPipe are NOT installed there; the code
+#       keeps face/pose importable and returns HTTP 503 with an explanatory
+#       message when those capabilities are requested (see IBVAP_ENABLE_*).
+#
 # Heads-up on heavyweight dependencies:
 #   * deepface pulls in TensorFlow (~500 MB)
 #   * paddle is INCOMPATIBLE with this Python/paddleocr combo (PIR "strides"
@@ -7,7 +16,8 @@
 #     an optional legacy fallback and needs no paddle runtime for that path.
 # Model weights (YOLO .pt, DeepFace, MediaPipe, RapidOCR ONNX) are
 # downloaded automatically on first use and cached in the user's home
-# directory.
+# directory (override with YOLO_MODEL_DIR on ephemeral hosts).
+
 
 # --- AI / vision capabilities -------------------------------------------
 ultralytics          # YOLO object detection + tracking

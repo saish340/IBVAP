@@ -3,6 +3,9 @@
 # Built from the repository root:  docker build -t ibvap-backend .
 # NOTE: model weights (*.pt) are NOT baked in — they download on first
 # use and are cached (keeps the image small + cloud builds working).
+#
+# CLOUD PORT: the container honours $PORT (HF Spaces / Railway / Render
+# inject it) via scripts/start_server.sh — always binds 0.0.0.0.
 # ------------------------------------------------------------------
 FROM python:3.11-slim
 
@@ -29,11 +32,15 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 COPY ingestion ./ingestion
 COPY inference ./inference
 COPY backend ./backend
+COPY samples ./samples
+COPY scripts/start_server.sh ./scripts/start_server.sh
+RUN chmod +x ./scripts/start_server.sh
 
 # Writable dir for SQLite (compose mounts ibvap_data here).
 RUN mkdir -p /app/data
 
 EXPOSE 8000
 
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["./scripts/start_server.sh"]
+
 

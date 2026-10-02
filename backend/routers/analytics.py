@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from inference import list_capabilities
 
+from ..config import settings
 from ..database import get_db
 from ..models import Event, Stream
 from ..pipeline_manager import pipeline_manager
@@ -22,6 +23,24 @@ def _get_stream(db: Session, stream_id: int) -> Stream:
     if stream is None:
         raise HTTPException(status_code=404, detail=f"Stream {stream_id} not found")
     return stream
+
+
+def _env_gate(capability: str) -> None:
+    """Reject env-disabled heavy capabilities with 503 (not silent removal)."""
+    gated = (
+        (capability in ("face_recognition", "face_verification") and not settings.enable_face)
+        or (capability == "pose" and not settings.enable_pose)
+        or (capability in ("ocr", "anpr") and not settings.enable_anpr)
+    )
+    if gated:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Capability '{capability}' is disabled on this host "
+                f"(IBVAP_ENABLE_*=0 for the free demo). Enable it and redeploy "
+                f"for full functionality — nothing was removed."
+            ),
+        )
 
 
 def _get_anpr_engine(stream_id: int):
@@ -39,7 +58,30 @@ def _get_anpr_engine(stream_id: int):
 
 @router.get("/capabilities", summary="List available inference capabilities")
 def capabilities() -> dict:
-    return {"capabilities": list_capabilities()}
+    """All registered capabilities, annotated with env-gated availability.
+
+    ``available`` reflects what is *installed + enabled* here; ``disabled_by_env``
+    names capabilities switched off via ``IBVAP_ENABLE_*`` (free hosts), and
+    ``demo_mode`` mirrors the server mode. Unavailable-but-registered names are
+    kept (never silently dropped) so clients can explain *why* — e.g. face
+    verification needs DeepFace/TensorFlow, which is too heavy for free CPU.
+    """
+    all_caps = list_capabilities()
+    disabled = [
+        name
+        for name in all_caps
+        if (
+            (name in ("face_recognition", "face_verification") and not settings.enable_face)
+            or (name == "pose" and not settings.enable_pose)
+            or (name in ("ocr", "anpr") and not settings.enable_anpr)
+        )
+    ]
+    return {
+        "capabilities": all_caps,
+        "available": [c for c in all_caps if c not in disabled],
+        "disabled_by_env": disabled,
+        "demo_mode": settings.demo_mode,
+    }
 
 
 @router.get(
@@ -67,6 +109,7 @@ def run_capability(stream_id: int, capability: str, db: Session = Depends(get_db
             status_code=400,
             detail=f"Unknown capability '{capability}'. Available: {list_capabilities()}",
         )
+    _env_gate(capability)
     stream = _get_stream(db, stream_id)
     result = pipeline_manager.run_once(
         stream.id, stream.source_url, stream.capabilities, capability

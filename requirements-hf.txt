@@ -1,0 +1,39 @@
+# IBVAP backend requirements — HUGGING FACE FREE-DEMO flavour (Python 3.11).
+#
+# Lean CPU-only install for the 2 vCPU / 16 GB free Spaces tier:
+#   pip install -r requirements-hf.txt
+#
+# What is IN:  YOLOv8 (ultralytics) + ByteTrack (supervision) + OpenCV-headless
+# + RapidOCR/ONNX + FastAPI/Uvicorn + WebSockets + SQLAlchemy + SQLite + fence
+# geometry (shapely) + pipeline HTTP client (requests).
+#
+# What is OUT (and WHY):
+#   * deepface (TensorFlow ~500 MB + RetinaFace): OOMs / times out the free
+#     CPU build and first-boot model pull. Face code stays in the repo and
+#     returns HTTP 503 with an explanatory message when IBVAP_ENABLE_FACE=0.
+#   * mediapipe: heavy wheel + single-person pose; not needed for the
+#     detection/tracking/ANPR portfolio demo (IBVAP_ENABLE_POSE=0).
+#   * paddleocr: legacy OCR fallback only; RapidOCR/ONNX is the default and
+#     needs no paddle runtime (also avoids the paddle PIR "strides" crash).
+#   * psycopg2-binary: Postgres client for VPS/Render; HF demo uses SQLite.
+#
+# For the FULL stack (VPS / Render paid) use requirements.txt instead.
+# Model weights (*.pt / ONNX) are never committed — yolov8n.pt (~6 MB)
+# downloads automatically on first inference and caches under
+# $YOLO_MODEL_DIR (ephemeral on free Spaces: re-downloads after restart).
+
+# --- AI / vision capabilities (lean) --------------------------------------
+ultralytics          # YOLO object detection + tracking
+supervision>=0.20,<0.31  # ByteTrack multi-object tracking + annotation helpers
+# (supervision 0.31 will drop the built-in ByteTrack; revisit tracking then)
+opencv-python-headless  # video decode + image ops (no GUI libs on servers)
+rapidocr_onnxruntime # text recognition (OCR) - default backend, no paddle needed
+onnxruntime          # runtime required by RapidOCR
+shapely              # virtual-fence polygon geometry
+requests             # resilient pipeline HTTP client
+
+# --- Backend / API ----------------------------------------------------------
+fastapi
+uvicorn
+websockets
+sqlalchemy

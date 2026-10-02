@@ -12,7 +12,24 @@ and WebSockets. A React + Vite + Tailwind dashboard consumes the API.
 | Inference | Ultralytics YOLO, DeepFace, PaddleOCR, MediaPipe, ConditionMonitor |
 | Backend   | FastAPI, Uvicorn, WebSockets, SQLAlchemy, PostgreSQL / SQLite |
 | Frontend  | React 18, Vite 5, Tailwind CSS 3                              |
-| Deploy    | Docker Compose (backend + frontend + SQLite volume)           |
+| Deploy    | Docker Compose (VPS) · Render (paid cloud) · HF Spaces (free demo) |
+
+## Deployment options
+
+| | A — Free demo ✅ | B — Paid cloud | C — Full CCTV |
+|---|---|---|---|
+| Frontend | Vercel (`frontend/`) | Vercel (`frontend/`) | Docker nginx (`:8080`) |
+| Backend | **Hugging Face Spaces (Docker, free CPU)** | Render (`render.yaml`, Standard 2 GB+) | VPS `docker compose` |
+| Input | video files / URLs (no LAN cameras) | video files / public RTSP | RTSP + webcam + files |
+| Face / pose | 503-gated via `IBVAP_ENABLE_*=0` (by design) | full | full |
+| Storage | ephemeral (resets on restart) | 5 GB disk | `ibvap_data` volume |
+| Guide | **`DEPLOY_FREE.md`** | `DEPLOY.md` | `DEPLOY.md` |
+| Use for | SIH / college portfolio demo | hosted full-feature demo | production CCTV |
+
+Quick links: free demo → `DEPLOY_FREE.md` (Space env vars, Vercel
+`VITE_API_URL`/`VITE_WS_URL`, `CORS_ORIGINS`, limitations). Paid/VPS →
+`DEPLOY.md`. Backend images: `Dockerfile` (full stack) vs
+`Dockerfile.huggingface` (`requirements-hf.txt`, lean CPU-only).
 
 ## Project structure
 
@@ -35,7 +52,7 @@ ibvap/
 │   └── pose_estimation.py     #   body pose             (mediapipe)
 ├── backend/                   # FastAPI service
 │   ├── main.py                #   app entry + WebSocket /ws/streams/{id}
-│   ├── config.py              #   environment-based settings
+│   ├── config.py              #   environment-based settings (PORT, demo mode, gates)
 │   ├── database.py            #   SQLAlchemy engine / session
 │   ├── models.py              #   Stream + Event tables
 │   ├── schemas.py             #   Pydantic request / response models
@@ -44,11 +61,17 @@ ibvap/
 │   └── routers/               #   health, streams, analytics, alerts, watchlist
 ├── frontend/                  # React + Vite + Tailwind security dashboard
 ├── scripts/                   # fake-CCTV ffmpeg re-streamer + RTSP test viewer
+│   ├── start_server.sh        #   PORT-aware uvicorn start (0.0.0.0, cloud-safe)
 │   └── ppt_visuals/           #   presentation figure generator + QA check
+├── samples/demo.mp4           # bundled clip seeding the free-demo stream
 ├── ppt_visual_results/        # generated presentation PNGs (regenerable)
-├── docker-compose.yml         # backend + frontend + SQLite volume
-├── Dockerfile                 # backend image (python:3.11-slim)
-└── requirements.txt
+├── docker-compose.yml         # VPS: backend + frontend + SQLite volume
+├── Dockerfile                 # backend image, FULL stack (python:3.11-slim)
+├── Dockerfile.huggingface     # backend image, LEAN free-demo (requirements-hf.txt)
+├── requirements.txt           # full install (VPS / Render paid)
+├── requirements-hf.txt        # lean CPU-only install (HF Spaces free demo)
+├── DEPLOY.md                  # Options B + C (paid cloud + VPS)
+└── DEPLOY_FREE.md             # Option A (free Vercel + HF demo)
 ```
 
 ## Quickstart (Docker)

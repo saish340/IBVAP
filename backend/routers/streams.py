@@ -12,12 +12,22 @@ from sqlalchemy.orm import Session
 
 from inference import list_capabilities
 
+from ..config import settings
 from ..database import get_db
 from ..models import Stream
 from ..pipeline_manager import pipeline_manager
 from ..schemas import StreamCreate, StreamOut
 
 router = APIRouter(prefix="/streams", tags=["streams"])
+
+
+def _is_env_gated(capability: str) -> bool:
+    """True when a heavy capability is switched off via IBVAP_ENABLE_*."""
+    return (
+        (capability in ("face_recognition", "face_verification") and not settings.enable_face)
+        or (capability == "pose" and not settings.enable_pose)
+        or (capability in ("ocr", "anpr") and not settings.enable_anpr)
+    )
 
 
 def _get_stream(db: Session, stream_id: int) -> Stream:
@@ -60,6 +70,15 @@ def create_stream(payload: StreamCreate, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=400,
             detail=f"Unknown capabilities: {unknown}. Available: {list_capabilities()}",
+        )
+    gated = [c for c in payload.capabilities if _is_env_gated(c)]
+    if gated:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Capabilities disabled on this host: {gated}. "
+                f"Set IBVAP_ENABLE_*=1 and redeploy, or drop them for the free demo."
+            ),
         )
     stream = Stream(
         name=payload.name,

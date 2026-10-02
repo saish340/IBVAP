@@ -34,4 +34,13 @@ def health() -> dict:
         "app": settings.app_name,
         "version": settings.version,
         "database": database,
+        # Free-demo observability: which optional heavy capabilities are
+        # switched on, and whether demo mode is active. Frontend ignores
+        # unknown keys; the SIH demo panel can surface these.
+        "demo_mode": settings.demo_mode,
+        "capabilities_enabled": {
+            "face": settings.enable_face,
+            "pose": settings.enable_pose,
+            "anpr": settings.enable_anpr,
+        },
     }

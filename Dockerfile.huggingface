@@ -1,0 +1,59 @@
+# ------------------------------------------------------------------
+# IBVAP backend — HUGGING FACE SPACES (free demo) image.
+#
+# This file is SEPARATE from ./Dockerfile on purpose: the production image
+# (VPS / Render paid) keeps the full AI stack incl. DeepFace/TensorFlow +
+# MediaPipe. This image installs requirements-hf.txt (lean CPU-only:
+# YOLOv8 + ByteTrack + RapidOCR/ONNX, no TF/MediaPipe) so it fits the free
+# Spaces CPU tier and builds in minutes instead of timing out.
+#
+# Space SDK must be "Docker". HF injects $PORT (default 7860); the start
+# script honours it and always binds 0.0.0.0.
+# ------------------------------------------------------------------
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    # Free-demo defaults (override in Space Settings → Variables & secrets):
+    IBVAP_DEMO_MODE=1 \
+    IBVAP_ENABLE_FACE=0 \
+    IBVAP_ENABLE_POSE=0 \
+    IBVAP_ENABLE_ANPR=1 \
+    IBVAP_DEMO_CAPABILITIES=detection,tracking \
+    YOLO_MODEL=yolov8n.pt \
+    YOLO_IMGSZ=480 \
+    YOLO_THREADS=2 \
+    PROCESS_EVERY_N_FRAMES=5 \
+    DATABASE_URL=sqlite:///./data/ibvap.db \
+    WATCHLIST_DB=data/watchlist.db
+
+# Runtime libraries required by OpenCV-headless / FFmpeg / ONNX.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        libgl1 \
+        libglib2.0-0 \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements-hf.txt .
+RUN pip install --upgrade pip && pip install -r requirements-hf.txt
+
+# Application code + bundled sample clip (seeds the zero-setup demo stream)
+# + portable start script.
+COPY ingestion ./ingestion
+COPY inference ./inference
+COPY backend ./backend
+COPY samples/demo.mp4 ./samples/demo.mp4
+COPY scripts/start_server.sh ./scripts/start_server.sh
+RUN chmod +x ./scripts/start_server.sh
+
+# Writable dirs (Spaces filesystem is ephemeral without persistent storage).
+RUN mkdir -p /app/data
+
+EXPOSE 7860
+
+CMD ["./scripts/start_server.sh"]

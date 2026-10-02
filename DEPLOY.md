@@ -1,13 +1,15 @@
 # IBVAP — Deploy Guide
 
-Two supported ways to publish. Pick **one**:
+Three supported options. Pick **one**:
 
-| | VPS (recommended) | Split (Vercel + Render) |
-|---|---|---|
-| What | Full app on one machine via `docker compose` | Static frontend on Vercel, API on Render |
-| RTSP cameras | ✅ works | ❌ cloud has no LAN cameras — use video-file streams for demo |
-| Cost | ~$6–12/mo (Hetzner / DO / EC2) | Free tier works for click-through, but YOLO needs paid 2 GB RAM |
-| URL shape | `http://YOUR_IP:8080` (dashboard), `:8000/docs` (API) | `https://<app>.vercel.app` + `https://<api>.onrender.com` |
+| | A — Free demo ✅ | B — Paid cloud | C — Full CCTV (recommended for RTSP) |
+|---|---|---|---|
+| What | Vercel frontend + **Hugging Face Spaces** backend (free CPU) | Static frontend on Vercel, API on Render | Full app on one machine via `docker compose` |
+| Input | video files / URLs (no LAN cameras) | video files / public RTSP | RTSP + webcam + files |
+| Face / pose | 503-gated (`IBVAP_ENABLE_*=0`, by design) | full | full |
+| Cost | **Free** | Paid (Standard 2 GB+) | ~$6–12/mo (Hetzner / DO / EC2) |
+| URL shape | `https://<app>.vercel.app` + `https://<you>-ibvap-demo.hf.space` | `https://<app>.vercel.app` + `https://<api>.onrender.com` | `http://YOUR_IP:8080` + `:8000/docs` |
+| Guide | **`DEPLOY_FREE.md`** | below | below |
 
 ---
 

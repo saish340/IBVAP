@@ -9,6 +9,14 @@ def _env_list(key: str, default: str) -> list[str]:
     return [item.strip() for item in os.getenv(key, default).split(",") if item.strip()]
 
 
+def _env_flag(key: str, default: bool = True) -> bool:
+    """Parse a ``0/1/true/false`` env flag (default ``default`` when unset)."""
+    raw = os.getenv(key)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off", "")
+
+
 class Settings:
     """Runtime settings for the IBVAP backend (12-factor style env vars)."""
 
@@ -16,8 +24,45 @@ class Settings:
         self.app_name: str = "IBVAP Backend"
         self.version: str = "0.1.0"
 
+        # Public port. Local/dev default 8000; cloud hosts (HF Spaces, Railway,
+        # Render) inject PORT and the start command must honour it.
+        self.port: int = int(os.getenv("PORT", os.getenv("BACKEND_PORT", "8000")))
+
+        # Demo mode (free-cloud portfolio demo: video-file input, no hardware).
+        # RTSP/webcam support stays in the code; demo mode only changes what
+        # the server *prefers/starts by itself* (see backend/main.py lifespan).
+        self.demo_mode: bool = _env_flag("IBVAP_DEMO_MODE", False)
+        # Autostart enabled streams on boot? Free hosts sleep/restart often and
+        # the filesystem is ephemeral — default boot is clean + cheap unless
+        # IBVAP_AUTOSTART_STREAMS=1 is set explicitly.
+        self.autostart_streams: bool = _env_flag("IBVAP_AUTOSTART_STREAMS", True)
+        # Seed one demo stream pointing at the bundled sample clip so the free
+        # demo works with zero setup. Empty string disables seeding.
+        self.demo_video_path: str = os.getenv("IBVAP_DEMO_VIDEO", "samples/demo.mp4")
+        self.demo_stream_name: str = os.getenv("IBVAP_DEMO_STREAM_NAME", "demo-video-file")
+        # Capabilities attached to the seeded demo stream. Keep light for free
+        # CPU (no DeepFace/TensorFlow); full stack stays available on demand
+        # and on VPS/Render.
+        self.demo_capabilities: list[str] = _env_list(
+            "IBVAP_DEMO_CAPABILITIES", "detection,tracking"
+        )
+
+        # Optional heavyweight capabilities. They stay IMPORTABLE and usable
+        # when installed, but can be switched off on tiny free hosts so the
+        # server never OOMs at import/model-load time. Nothing is removed.
+        self.enable_face: bool = _env_flag("IBVAP_ENABLE_FACE", True)
+        self.enable_pose: bool = _env_flag("IBVAP_ENABLE_POSE", True)
+        self.enable_anpr: bool = _env_flag("IBVAP_ENABLE_ANPR", True)
+
+        # Where HF/Ultralytics caches downloaded YOLO weights. Spaces keeps
+        # this inside the container (ephemeral) unless a persistent volume is
+        # attached — first request after a restart re-downloads (~12 MB).
+        self.yolo_model_dir: str = os.getenv(
+            "YOLO_MODEL_DIR", os.getenv("ULTRALYTICS_SETTINGS_DIR", "")
+        ).strip()
+
         # Database. Defaults to a zero-config SQLite file for local dev;
-        # docker-compose sets DATABASE_URL to the postgres container.
+        # docker-compose points it at the ibvap_data volume.
         self.database_url: str = os.getenv("DATABASE_URL", "sqlite:///./ibvap.db")
 
         # CORS: the Vite dev server runs on 5173 by default.
@@ -119,6 +164,11 @@ class Settings:
 
         # Face watchlist SQLite file (shared by WatchlistManager + /watchlist API).
         self.watchlist_db_path: str = os.getenv("WATCHLIST_DB", "watchlist.db")
+        # Where pipeline alert threads POST ingested events. Defaults to the
+        # same-process loopback; override only for split-process debugging
+        # (e.g. ALERT_INGEST_URL=http://backend:8000/events/ingest in compose).
+        # NOTE: pipeline threads run in-process with the API, so this URL is
+        # never the public browser URL — do not point it at Vercel/HF here.
         self.alert_ingest_url: str = os.getenv(
             "ALERT_INGEST_URL", "http://127.0.0.1:8000/events/ingest"
         )

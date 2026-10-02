@@ -1,5 +1,11 @@
 # Keep cloud build contexts small — demo videos + local artefacts never
 # belong in an image. (Model weights download on first use and are cached.)
+#
+# NOTE: samples/ IS shipped in the backend image (see Dockerfile COPY) so the
+# HF free demo can seed a video-file stream with zero setup.
+# Only samples/demo.mp4 is needed — large raw captures stay out.
+*.mp4
+!samples/demo.mp4
 .venv/
 .venv-*/
 venv/
@@ -13,14 +19,13 @@ __pycache__/
 *.onnx
 *.engine
 models/
-samples/
 tools/
 demo/
 ppt_visual_results/
 test_results/
 frontend/node_modules/
 frontend/dist/
-*.mp4
 *.webm
 *.jpg
 .env
+

@@ -99,7 +99,19 @@ class ANPRAnalyzer:
 
 
 def build_analyzer(name: str) -> BaseAnalyzer:
-    """Create an analyzer, applying global settings where relevant."""
+    """Create an analyzer, applying global settings where relevant.
+
+    Honors IBVAP_ENABLE_* gates: env-disabled heavy capabilities raise
+    RuntimeError so the pipeline skips them (logged) instead of importing
+    multi-GB stacks (DeepFace/TensorFlow) on tiny free hosts. Nothing is
+    removed — set the flag to 1 and redeploy for full functionality.
+    """
+    if name in ("face_recognition", "face_verification") and not settings.enable_face:
+        raise RuntimeError(f"capability '{name}' disabled by IBVAP_ENABLE_FACE=0")
+    if name == "pose" and not settings.enable_pose:
+        raise RuntimeError(f"capability '{name}' disabled by IBVAP_ENABLE_POSE=0")
+    if name in ("ocr", "anpr") and not settings.enable_anpr:
+        raise RuntimeError(f"capability '{name}' disabled by IBVAP_ENABLE_ANPR=0")
     kwargs: Dict[str, Any] = {}
     if name in ("detection", "tracking"):
         kwargs["model_name"] = settings.yolo_model

@@ -3,11 +3,18 @@
 Defaults to a zero-config SQLite database for local development; set
 ``DATABASE_URL`` (e.g. ``postgresql+psycopg2://user:pass@host:5432/ibvap``)
 to use PostgreSQL — docker-compose does this for the backend container.
+
+Free-cloud note: filesystems on free tiers (e.g. Hugging Face Spaces without
+persistent storage) are ephemeral — SQLite works fine for the demo but rows
+reset on restart/rebuild. Parent directories of configured SQLite paths are
+created automatically (SQLite cannot create them itself).
 """
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
@@ -15,6 +22,24 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from .config import settings
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./ibvap.db")
+
+
+def _ensure_sqlite_parent(url: str) -> None:
+    """Create the parent directory of a file-based SQLite URL if needed."""
+    if not url.startswith("sqlite"):
+        return
+    # sqlite:///./data/ibvap.db | sqlite:////app/data/ibvap.db | sqlite:///ibvap.db
+    path = url.split("sqlite:///", 1)[-1]
+    path = unquote(urlparse(path).path or path)
+    if path in ("", ":memory:"):
+        return
+    parent = Path(path).expanduser().parent
+    if str(parent) not in ("", "."):
+        parent.mkdir(parents=True, exist_ok=True)
+
+
+_ensure_sqlite_parent(DATABASE_URL)
+_ensure_sqlite_parent(f"sqlite:///{settings.watchlist_db_path}")
 
 engine_kwargs: dict = {"pool_pre_ping": True}
 if DATABASE_URL.startswith("sqlite"):
