@@ -1,0 +1,3 @@
+# Vercel treats `frontend/` as the project root (see "Root Directory" below).
+/node_modules
+dist

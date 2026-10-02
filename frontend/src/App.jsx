@@ -1,9 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
 
-const API = "/api";
+// Production-ready API resolution:
+//  - Same-origin (docker-compose / VPS via nginx): VITE_API_URL unset -> "/api"
+//  - Split deploy (Vercel + Render/Railway): VITE_API_URL="https://<backend>"
+const RAW_API = (import.meta.env.VITE_API_URL || "").trim().replace(/\/+$/, "");
+const RAW_WS = (import.meta.env.VITE_WS_URL || "").trim().replace(/\/+$/, "");
+
+const API = RAW_API || "/api";
+
+function apiUrl(path) {
+  return `${API}${path}`;
+}
+
+function wsUrl(path) {
+  if (RAW_WS) return `${RAW_WS}${path}`;
+  if (RAW_API) return `${RAW_API.replace(/^http/, "ws")}${path}`;
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${protocol}://${window.location.host}${path}`;
+}
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API}${path}`, options);
+  const response = await fetch(apiUrl(path), options);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
@@ -93,13 +110,12 @@ export default function App() {
   }, [selectedId]);
 
   useEffect(() => {
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     let socket;
     let retryTimer;
     let active = true;
     const connect = () => {
       if (!active) return;
-      socket = new WebSocket(`${protocol}://${window.location.host}/ws/alerts`);
+      socket = new WebSocket(wsUrl("/ws/alerts"));
       socket.onmessage = (event) => {
         const alert = JSON.parse(event.data);
         setAlerts((current) => [alert, ...current].slice(0, 30));
@@ -153,7 +169,7 @@ export default function App() {
     }
   }
 
-  const frameUrl = selected ? `${API}/streams/${selected.id}/mjpeg` : "";
+  const frameUrl = selected ? apiUrl(`/streams/${selected.id}/mjpeg`) : "";
   const online = health?.status === "ok";
 
   return (

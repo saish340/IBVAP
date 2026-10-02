@@ -1,0 +1,27 @@
+# Render.com — IBVAP backend (Docker).
+# Dashboard -> New -> Blueprint -> select this repo.
+# Set CORS_ORIGINS to your Vercel URL after first deploy.
+services:
+  - type: web
+    name: ibvap-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard # 2GB RAM minimum for YOLO; starter (512MB) will OOM
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite:///./data/ibvap.db
+      - key: WATCHLIST_DB
+        value: data/watchlist.db
+      - key: CORS_ORIGINS
+        sync: false # set in dashboard: https://<your-app>.vercel.app
+      - key: YOLO_MODEL
+        value: yolov8n.pt
+      - key: PROCESS_EVERY_N_FRAMES
+        value: "5"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    disk:
+      name: ibvap-data
+      mountPath: /app/data
+      sizeGB: 5

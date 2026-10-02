@@ -1,20 +1,37 @@
 # ------------------------------------------------------------------
-# Placeholder frontend image — runs the Vite dev server so the
-# container is reachable at http://localhost:5173.
-# TODO: replace with a multi-stage build (node build -> nginx serve)
-# once the dashboard is production-ready.
+# IBVAP frontend — production image (node build -> nginx serve).
+#
+# Single-origin mode (default, used by docker-compose / VPS):
+#   browser -> nginx (:80) -> /api/*, /ws/* proxied to backend:8000
+#   so the React app can keep using relative "/api" + same-host WS.
+#
+# Split mode (Vercel frontend + Render/Railway backend):
+#   build with  --build-arg VITE_API_URL=https://<backend> 
+#   then the app calls the backend directly (CORS must allow it).
 # ------------------------------------------------------------------
-FROM node:20-alpine
+FROM node:20-alpine AS build
 
 WORKDIR /app
 
-ENV VITE_API_TARGET=http://backend:8000
-
-COPY package.json ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY . .
 
-EXPOSE 5173
+# Optional at build time. Empty = same-origin via nginx proxy.
+ARG VITE_API_URL=""
+ARG VITE_WS_URL=""
+ENV VITE_API_URL=$VITE_API_URL \
+    VITE_WS_URL=$VITE_WS_URL
 
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+RUN npm run build
+
+FROM nginx:1.27-alpine
+
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/dist /usr/share/nginx/html
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
+
