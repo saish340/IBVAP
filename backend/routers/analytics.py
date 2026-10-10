@@ -99,6 +99,43 @@ def latest_results(stream_id: int, db: Session = Depends(get_db)) -> dict:
     return snapshot
 
 
+@router.get(
+    "/streams/{stream_id}/status",
+    summary="Liveness status for a stream (last frame timestamp)",
+)
+def stream_status(stream_id: int, db: Session = Depends(get_db)) -> dict:
+    """Return whether the stream is producing frames and when the last one
+    was seen. ``last_frame_timestamp`` is the newest result timestamp
+    (epoch seconds) across capabilities, or ``None`` if no frame has been
+    processed yet. Frontends poll this to show a STALE warning when the
+    feed stops advancing."""
+    _get_stream(db, stream_id)
+    snapshot = pipeline_manager.snapshot(stream_id)
+    if snapshot is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Stream is not running; start it with POST /streams/{id}/start",
+        )
+    results = snapshot.get("results") or {}
+    last_ts = None
+    for payload in results.values():
+        if not isinstance(payload, dict):
+            continue
+        try:
+            ts = float(payload.get("timestamp"))
+        except (TypeError, ValueError):
+            continue
+        if last_ts is None or ts > last_ts:
+            last_ts = ts
+    return {
+        "stream_id": stream_id,
+        "running": snapshot.get("running", False),
+        "frames_seen": snapshot.get("frames_seen", 0),
+        "frame_available": snapshot.get("frame_available", False),
+        "last_frame_timestamp": last_ts,
+    }
+
+
 @router.post(
     "/streams/{stream_id}/run/{capability}",
     summary="Run one capability on the next available frame",

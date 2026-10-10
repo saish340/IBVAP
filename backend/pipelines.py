@@ -38,6 +38,46 @@ from inference.face_association import FaceOverlayTracker
 logger = logging.getLogger(__name__)
 
 
+# Demo survivability tuning for the CPU-bound face path (14-25s/frame).
+# Fallback so the pipeline never crashes if RetinaFace finds no face in a
+# (possibly resized) crop — DeepFace then returns an empty/placeholder
+# result instead of raising.
+DEEPFACE_ENFORCE_DETECTION = False
+# ArcFace embedding input cap: face CROPS are resized to at most 160x160
+# before DeepFace. The full frame is never resized here (only the existing
+# half-res detection pass touches it).
+FACE_CROP_MAX_SIZE = 160
+# face_verified cache policy: successful matches above this threshold stay
+# overlaid for this many seconds without re-running ArcFace.
+FACE_MATCH_THRESHOLD = 0.6
+FACE_VERIFIED_TTL_SECONDS = 8.0
+
+
+def _resize_face_crop(crop, max_size: int = FACE_CROP_MAX_SIZE):
+    """Resize a cropped face region to 160x160 max before ArcFace embedding.
+
+    Only the face crop AFTER RetinaFace detection is resized — never the
+    full frame. Preserves aspect ratio, never upscales tiny crops, and caps
+    the longest side at ``max_size`` (default 160) so the ArcFace pass stays
+    cheap on CPU.
+    """
+    try:
+        h, w = crop.shape[:2]
+    except AttributeError:
+        return crop
+    if h <= 0 or w <= 0:
+        return crop
+    scale = min(1.0, float(max_size) / float(max(h, w)))
+    if scale >= 1.0:
+        return crop
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    try:
+        return cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    except Exception:
+        return crop
+
+
 class FaceVerificationAnalyzer:
     """Adapter for the stateful ArcFace watchlist engine."""
 
@@ -58,11 +98,23 @@ class FaceVerificationAnalyzer:
         # Perf: run RetinaFace detection at half resolution, then scale
         # bounding boxes back up to full-frame coordinates. This alone
         # roughly halves face detection time with negligible accuracy loss
-        # for dashboard overlay purposes.
+        # for dashboard overlay purposes. NOTE: the full frame is never
+        # resized to 160x160 — only per-face crops (see verify_face_crop /
+        # _resize_face_crop) are capped before the ArcFace embedding pass.
         h, w = frame.shape[:2]
         small = cv2.resize(frame, (max(1, w // 2), max(1, h // 2)),
                            interpolation=cv2.INTER_LINEAR)
-        results = self.engine.process_frame(small, draw=False)
+        try:
+            results = self.engine.process_frame(small, draw=False)
+        except Exception:
+            # DEEPFACE_ENFORCE_DETECTION=False fallback: RetinaFace found no
+            # face in the crop/frame — never crash the heavy worker.
+            logger.debug(
+                "face verification pass failed (enforce_detection=%s)",
+                DEEPFACE_ENFORCE_DETECTION, exc_info=True,
+            )
+            self.annotated_frame = None
+            return {"capability": self.name, "faces": [], "count": 0}
         scaled = []
         for face in results:
             box = face.get("bbox")
@@ -77,6 +129,46 @@ class FaceVerificationAnalyzer:
             scaled.append({**face, "bbox": [x1, y1, x2, y2]})
         self.annotated_frame = self.engine.annotated_frame
         return {"capability": self.name, "faces": scaled, "count": len(scaled)}
+
+    def verify_face_crop(self, face_crop):
+        """Verify a single RetinaFace face crop against the watchlist.
+
+        The crop (taken AFTER RetinaFace detection) is resized to 160x160
+        maximum via :func:`_resize_face_crop` before being passed to
+        DeepFace, keeping the ArcFace embedding cheap on CPU. Uses
+        ``DEEPFACE_ENFORCE_DETECTION=False`` as a fallback so a crop with
+        no detectable face returns UNKNOWN instead of raising.
+        """
+        tiny = _resize_face_crop(face_crop, max_size=FACE_CROP_MAX_SIZE)
+        try:
+            from deepface import DeepFace
+
+            reps = DeepFace.represent(
+                img_path=tiny,
+                model_name="ArcFace",
+                detector_backend="retinaface",
+                enforce_detection=DEEPFACE_ENFORCE_DETECTION,
+                align=True,
+            )
+        except Exception:
+            # RetinaFace found no face in the (resized) crop — fallback,
+            # never crash the pipeline.
+            logger.debug(
+                "verify_face_crop: no face in crop (enforce_detection=%s)",
+                DEEPFACE_ENFORCE_DETECTION, exc_info=True,
+            )
+            return {"name": "UNKNOWN", "confidence": 0.0}
+        best_name, best_score = "UNKNOWN", 0.0
+        for rep in reps or []:
+            if float(rep.get("face_confidence") or 0.0) <= 0:
+                continue
+            import numpy as np
+
+            embedding = np.asarray(rep["embedding"], dtype=np.float32)
+            name, score = self.engine.watchlist.match(embedding)
+            if float(score) > float(best_score):
+                best_name, best_score = name, float(score)
+        return {"name": best_name, "confidence": float(best_score)}
 
 
 class ANPRAnalyzer:
@@ -239,6 +331,14 @@ class StreamPipeline:
         self._cached_faces_at: float = 0.0
         self._cached_plates: list = []
         self._cached_plates_at: float = 0.0
+        # Demo survivability: per-track verified-identity cache keyed by
+        # track_id. After one successful ArcFace match above 0.6, the
+        # name/confidence stays overlaid for 8 seconds WITHOUT re-running
+        # ArcFace (which costs 14-25s/frame on CPU). Only re-verify when the
+        # entry expires or the track_id changes (new person / ID switch).
+        # Shape: {track_id: {"name": str, "confidence": float,
+        #                    "bbox": [x1,y1,x2,y2], "expires_at": epoch}}
+        self.face_verified: Dict[int, Dict[str, Any]] = {}
         self._persist_lock = threading.Lock()  # _maybe_persist runs on 2 threads
         # Face -> person association + live overlay state (see
         # inference.face_association): keeps the red face box following its
@@ -849,7 +949,9 @@ class StreamPipeline:
 
         Cache expires after face_cache_ttl_seconds (default 2s): within the
         window the last MATCH/UNKNOWN boxes stay visible on frames where
-        verification did not run; after expiry they are cleared.
+        verification did not run; after expiry they are cleared. The
+        longer-lived ``face_verified`` per-track cache (8s, see below) is
+        layered on top so a good match survives the whole demo.
         """
         ttl = float(getattr(settings, "face_cache_ttl_seconds", 2.0))
         now = time.time()
@@ -865,6 +967,107 @@ class StreamPipeline:
                 if payload is not None:
                     payload["faces"] = []
                     payload["count"] = 0
+
+    # ------------------------- face_verified per-track cache (8s, >0.6) ---
+    def _prune_face_verified(self, now: Optional[float] = None) -> None:
+        """Drop expired face_verified entries (8s TTL)."""
+        now = time.time() if now is None else float(now)
+        self.face_verified = {
+            tid: entry for tid, entry in self.face_verified.items()
+            if float(entry.get("expires_at", 0.0)) > now
+        }
+
+    def _get_face_verified(self, track_id, now: Optional[float] = None):
+        """Return the cached identity for track_id if still fresh, else None."""
+        now = time.time() if now is None else float(now)
+        try:
+            tid = int(track_id)
+        except (TypeError, ValueError):
+            return None
+        entry = self.face_verified.get(tid)
+        if not entry:
+            return None
+        if float(entry.get("expires_at", 0.0)) <= now:
+            self.face_verified.pop(tid, None)
+            return None
+        return entry
+
+    def _store_face_verified(self, track_id, name: str, confidence: float,
+                             bbox=None, now: Optional[float] = None) -> bool:
+        """Cache a successful match (>0.6) for 8 seconds, keyed by track_id."""
+        now = time.time() if now is None else float(now)
+        try:
+            tid = int(track_id)
+        except (TypeError, ValueError):
+            return False
+        try:
+            conf = float(confidence)
+        except (TypeError, ValueError):
+            return False
+        if not name or name == "UNKNOWN" or conf < FACE_MATCH_THRESHOLD:
+            return False
+        self.face_verified[tid] = {
+            "name": name,
+            "confidence": conf,
+            "bbox": list(bbox) if bbox is not None else None,
+            "expires_at": now + FACE_VERIFIED_TTL_SECONDS,
+            "cached_at": now,
+        }
+        return True
+
+    def _cached_face_payload_for_tracks(self, tracks, frame_id=None,
+                                        timestamp=None):
+        """Build a face payload from fresh face_verified entries.
+
+        Returns (payload_faces, all_covered): faces overlay the cached
+        name/confidence for every track with a fresh entry; all_covered is
+        True only when EVERY current track_id has a fresh entry (so the
+        caller may safely skip re-running ArcFace). A changed track_id
+        (missing entry) or an expired entry forces re-verification.
+        """
+        now = time.time()
+        self._prune_face_verified(now)
+        if not tracks:
+            return [], False
+        faces = []
+        all_covered = True
+        for track in tracks:
+            tid = track.get("track_id")
+            if tid is None:
+                all_covered = False
+                continue
+            entry = self._get_face_verified(tid, now)
+            if entry is None:
+                all_covered = False
+                continue
+            person_box = track.get("bbox")
+            faces.append({
+                "bbox": list(entry.get("bbox") or person_box or []),
+                "name": entry["name"],
+                "confidence": entry["confidence"],
+                "face_confidence": 1.0,
+                "track_id": int(tid),
+                "interpolated": True,
+                "from_cache": True,
+            })
+        return faces, (all_covered and len(faces) > 0)
+
+    def _publish_cached_faces(self, faces, frame_id=None, timestamp=None) -> None:
+        """Overlay cached name/confidence without re-running ArcFace."""
+        payload = {
+            "capability": "face_verification",
+            "faces": list(faces),
+            "count": len(faces),
+            "frame_id": frame_id,
+            "timestamp": timestamp if timestamp is not None else time.time(),
+            "latency_ms": 0.0,
+            "cached": True,
+        }
+        with self._results_lock:
+            self._results["face_verification"] = payload
+        # Keep the short-TTL overlay in sync so labels stay smooth.
+        self._cached_faces = list(faces)
+        self._cached_faces_at = time.time()
 
     def _refresh_anpr_cache_overlay(self) -> None:
         """Republish the cached plate read for anpr_cache_ttl_seconds (3s)."""
@@ -932,6 +1135,25 @@ class StreamPipeline:
                     if self._face_frame_counter % cadence != 0:
                         self._refresh_face_cache_overlay()
                         continue
+                    # face_verified cache: if EVERY current person track has
+                    # a fresh (>0.6, <8s old) identity, overlay the cached
+                    # name/confidence WITHOUT re-running ArcFace (14-25s on
+                    # CPU). Re-verify only on expiry or track_id change.
+                    with self._results_lock:
+                        _tracks = list(
+                            (self._results.get("tracking") or {}).get("tracks", [])
+                        )
+                    if _tracks:
+                        _cached_faces, _all_covered = (
+                            self._cached_face_payload_for_tracks(
+                                _tracks, frame.frame_id, frame.timestamp
+                            )
+                        )
+                        if _all_covered:
+                            self._publish_cached_faces(
+                                _cached_faces, frame.frame_id, frame.timestamp
+                            )
+                            continue
                 # Perf Problem 3: ANPR only every ANPR_EVERY_N_FRAMES-th
                 # frame, vehicle-gated (skip entirely with no car/truck/
                 # motorcycle in YOLO results) and ROI-cropped to the
@@ -1030,6 +1252,23 @@ class StreamPipeline:
                     # between runs (expires after face_cache_ttl_seconds).
                     self._cached_faces = list(payload.get("faces", []))
                     self._cached_faces_at = time.time()
+                    # face_verified: cache successful matches above the 0.6
+                    # threshold for 8 seconds, keyed by track_id. After one
+                    # good (15-25s) match the name stays on screen smoothly
+                    # without re-running ArcFace until expiry/ID change.
+                    for face in payload.get("faces", []):
+                        try:
+                            conf = float(face.get("confidence", 0.0))
+                        except (TypeError, ValueError):
+                            continue
+                        tid = face.get("track_id")
+                        fname = face.get("name")
+                        if tid is None or fname in (None, "UNKNOWN"):
+                            continue
+                        if conf >= FACE_MATCH_THRESHOLD:
+                            self._store_face_verified(
+                                tid, fname, conf, face.get("bbox")
+                            )
                 if name == "anpr" and "plates" in payload:
                     # Cache the last plate read for 3 seconds of overlay.
                     self._cached_plates = list(payload.get("plates", []))

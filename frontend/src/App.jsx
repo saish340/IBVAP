@@ -66,6 +66,8 @@ export default function App() {
   const [analysis, setAnalysis] = useState(null);
   const [degradation, setDegradation] = useState(null);
   const [adaptive, setAdaptive] = useState(null);
+  const [lastFrameTs, setLastFrameTs] = useState(null);
+  const [nowMs, setNowMs] = useState(Date.now());
   const selected = useMemo(() => streams.find((stream) => stream.id === selectedId), [streams, selectedId]);
 
   async function refresh() {
@@ -92,6 +94,7 @@ export default function App() {
   useEffect(() => {
     if (!selectedId) return undefined;
     let active = true;
+    setLastFrameTs(null);
     const poll = async () => {
       try {
         const result = await request(`/analytics/streams/${selectedId}/results`);
@@ -103,11 +106,23 @@ export default function App() {
       } catch {
         if (active) setAnalysis(null);
       }
+      try {
+        const status = await request(`/analytics/streams/${selectedId}/status`);
+        if (active) setLastFrameTs(status.last_frame_timestamp ?? null);
+      } catch {
+        // Keep the last known timestamp; staleness derives from it.
+      }
     };
     poll();
     const timer = setInterval(poll, 2000);
     return () => { active = false; clearInterval(timer); };
   }, [selectedId]);
+
+  // Tick so STREAM STALE flips promptly even between status polls.
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     let socket;
@@ -171,6 +186,9 @@ export default function App() {
 
   const frameUrl = selected ? apiUrl(`/streams/${selected.id}/mjpeg`) : "";
   const online = health?.status === "ok";
+  // STREAM STALE: no new backend frame timestamp in the last 5 seconds.
+  // Clears automatically once status polls report a fresh timestamp.
+  const streamStale = lastFrameTs != null && nowMs - lastFrameTs * 1000 > 5000;
 
   return (
     <div className="min-h-screen bg-[#071014] text-slate-100">
@@ -189,8 +207,9 @@ export default function App() {
                 via WebSocket + polling independently, so neither blocks the
                 other. will-change: transform GPU-composites the video layer
                 separately to avoid UI jank. */}
-            <div className="aspect-video bg-black" style={{ willChange: "transform" }}>
+            <div className="relative aspect-video bg-black" style={{ willChange: "transform" }}>
               {frameUrl ? <img key={selected.id} src={frameUrl} className="h-full w-full object-contain" alt="Live camera stream" draggable={false} style={{ willChange: "transform" }} /> : <div className="flex h-full items-center justify-center text-sm text-slate-600">Register a stream to begin</div>}
+              {streamStale && <div role="alert" className="absolute inset-x-0 top-0 bg-red-600/80 px-4 py-2 text-center text-sm font-semibold text-white">⚠️ Feed interrupted — reconnecting...</div>}
             </div>
             <div className="flex flex-wrap gap-2 border-t border-slate-800 p-4">{streams.map((stream) => <button key={stream.id} onClick={() => setSelectedId(stream.id)} className={`border px-3 py-2 text-left text-xs ${selectedId === stream.id ? "border-cyan-400 bg-cyan-400/10 text-cyan-200" : "border-slate-700 text-slate-400"}`}><span className="font-semibold">{stream.name}</span><span className="ml-2 text-slate-600">{stream.running ? "LIVE" : "OFFLINE"}</span></button>)}</div>
             {(analysis || degradation) && <div className="grid gap-2 border-t border-slate-800 p-4 text-xs sm:grid-cols-4">{degradation && <div className="border border-emerald-900 bg-emerald-400/5 p-3"><p className="uppercase tracking-widest text-emerald-500">Condition monitor</p><p className="mt-2 text-lg text-emerald-200">{degradation.condition}</p><p className="text-slate-400">severity {(degradation.severity * 100).toFixed(0)}%</p></div>}{adaptive && <div className="border border-violet-900 bg-violet-400/5 p-3"><p className="uppercase tracking-widest text-violet-400">Adaptive layer</p><p className="mt-2 text-lg text-violet-200">{adaptive.mode.replaceAll("_", " ")}</p><p className="text-slate-400">reliability {(adaptive.reliability_score * 100).toFixed(0)}% / fence {adaptive.fence_consensus_frames} frames</p></div>}{analysis?.tracking && <div className="border border-cyan-900 bg-cyan-400/5 p-3"><p className="uppercase tracking-widest text-cyan-500">Tracking</p><p className="mt-2 text-lg text-cyan-200">{analysis.tracking.count} active</p>{analysis.tracking.tracks?.map((track) => <p key={`${track.track_id}-${track.bbox?.join("-")}`} className="text-slate-400">{track.class} / ID {track.track_id} / {(track.confidence * 100).toFixed(0)}%</p>)}</div>}{analysis?.face_verification && <div className="border border-amber-900 bg-amber-400/5 p-3"><p className="uppercase tracking-widest text-amber-500">Faces</p><p className="mt-2 text-lg text-amber-200">{analysis.face_verification.count} detected</p>{analysis.face_verification.faces?.map((face, index) => <p key={`${face.name}-${index}`} className="text-slate-400">{face.name} / {(face.confidence * 100).toFixed(0)}%{face.track_id != null ? ` · ID ${face.track_id}` : ""}</p>)}</div>}{analysis?.anpr && <div className="border border-slate-700 bg-slate-900 p-3"><p className="uppercase tracking-widest text-slate-500">Plates</p><p className="mt-2 text-lg text-yellow-200">{analysis.anpr.count} plates</p>{analysis.anpr.plates?.map((plate, index) => <div key={`${plate.plate_text}-${index}`} className="flex items-center justify-between text-slate-300 mt-1"><span>PLATE: {plate.plate_text} / {(plate.confidence * 100).toFixed(0)}%</span><button onClick={() => hidePlate(plate.plate_text)} className="ml-2 text-xs text-red-400 hover:text-red-300" title="Hide plate from video">Hide</button></div>)}</div>}</div>}
